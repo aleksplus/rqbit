@@ -109,9 +109,7 @@ pub use librqbit_core::peer_id::*;
 pub use librqbit_core::torrent_metainfo::*;
 
 #[cfg(feature = "gpui")]
-pub mod gpui {
-    pub use librqbit_gpui::*;
-}
+pub use librqbit_gpui::*;
 
 #[cfg(test)]
 mod tests;

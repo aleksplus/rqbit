@@ -2,9 +2,10 @@
 name = "librqbit-gpui"
 version.workspace = true
 description = "GPUI-based UI for librqbit"
-
-# [dependencies]
-# gpui.workspace = true
+edition = "2024"
 
 [features]
 default = []
+
+[dependencies]
+gpui.workspace = true

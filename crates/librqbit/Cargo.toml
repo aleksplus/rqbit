@@ -19,7 +19,7 @@ http-api = ["axum", "tower-http"]
 http-api-client = []
 upnp-serve-adapter = ["upnp-serve"]
 webui = []
-gpui = ["dep:librqbit-gpui"]
+gpui = ['dep:librqbit-gpui']
 timed_existence = []
 default-tls = [
     "reqwest/default-tls",
@@ -108,7 +108,7 @@ intervaltree.workspace = true
 async-compression = { workspace = true, features = ["tokio", "gzip"] }
 librqbit-utp = { workspace = true, features = ["export-metrics"] }
 axum-extra = { workspace = true, features = ["query"] }
-librqbit-gpui = { path = "gpui", package = "librqbit-gpui", optional = true }
+librqbit-gpui = { workspace = true, optional = true }
 librqbit-dualstack-sockets = { workspace = true, features = ["axum"] }
 socket2.workspace = true
 nix = { workspace = true, features = ["uio"] }

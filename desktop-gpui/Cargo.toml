@@ -1,0 +1,8 @@
+[package]
+name = "rqbit-desktop-gpui"
+edition = "2024"
+version.workspace = true
+publish = false
+
+[dependencies]
+gpui.workspace = true
