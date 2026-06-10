@@ -2875,6 +2875,7 @@ dependencies = [
  "librqbit-core",
  "librqbit-dht",
  "librqbit-dualstack-sockets",
+ "librqbit-gpui",
  "librqbit-lsd",
  "librqbit-peer-protocol",
  "librqbit-sha1-wrapper",
@@ -3026,6 +3027,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "librqbit-gpui"
+version = "9.0.0-rc.0"
 
 [[package]]
 name = "librqbit-lsd"

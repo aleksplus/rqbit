@@ -52,4 +52,9 @@ fn main() {
             run_cmd(webui_dir, cmd).unwrap();
         }
     }
+
+    #[cfg(feature = "gpui")]
+    {
+        println!("gpui features enabled.");
+    }
 }
