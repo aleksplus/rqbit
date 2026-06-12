@@ -29,7 +29,7 @@ async fn test_ipc_create_magnet() -> anyhow::Result<()> {
     let tmp_dir = tempfile::tempdir()?;
     let secret_hex = "deadbeefcafebabe"; // dummy hex
     let secrets_path = tmp_dir.path().join("secrets.toml");
-    fs::write(&secrets_path, format!("secret = "{}", secret_hex))?;
+    fs::write(&secrets_path, format!("secret = "{}"", secret_hex))?;
 
     // 2. Create a minimal Api (using an in‑memory session)
     let tmp_data_dir = tmp_dir.path().join("data");
