@@ -34,6 +34,9 @@ parking_lot = { workspace = true }
 gethostname = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
 librqbit-dualstack-sockets = { workspace = true }
+ring = "0.17"
+hex = "0.4"
+toml = "0.8"
 
 [features]
 default = []

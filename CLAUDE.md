@@ -112,3 +112,33 @@ Tauri wrapper around the web UI.
 - If you need to resort to running shell commands, always use "rg" instead of "grep".
 - Prefer using Serena MCP instead of searching / reading / writing raw files when makes sense.
 - **Always run `npm run format` after modifying webui or desktop TypeScript/TSX files.**
+
+# Native‑only IPC (Rust plugin → Unix domain socket)
+
+This repository now exposes a **native Rust plugin** that can be loaded by GPUI.  
+All communication is done via a **Unix domain socket (`/tmp/rqlib-ipc.sock`)** using a thin JSON‑RPC layer.
+
+## RPC Methods
+
+| # | Method (JSON key)                | Description / Purpose |
+|---|----------------------------------|-----------------------|
+| 1 | `create_magnet`                  | Create a new torrent entry. Returns the generated `tid`. |
+| 2 | `get_state`                      | Query the internal status of an existing torrent (`live`, `seeding`, `paused`). |
+| 3 | `set_peer_limit`                 | Set the maximum number of peers for the given torrent. |
+| 4 | `get_peer_list`                  | Retrieve a list of active peer addresses (IP/port, role). |
+| 5 | `dht_peer_addr`                  | Query DHT nodes that are downloadable/seeding/trackers for a hash. |
+| 6 | `stats`                          | Aggregate usage statistics (bytes downloaded, peers alive). |
+| 7 | `get_session_config` *(optional)*| Read low‑level config stored in the SQLite session file – rarely needed from GPUI. |
+| 8 | `seed_magnet` *(optional)*       | Start seeding a magnet from an external source directory; currently mirrors existing web UI flow. |
+| 9 | `tracker_list`                   | List registered tracker URLs for a torrent. |
+|10 | `delete_torrent`                 | Remove a torrent entry from the session database. |
+
+### Request Payload Format
+
+```json
+{
+  "cmd": "<method-name>",               // required – RPC identifier (see table)
+  "version": "1.0",                     // API version; keep stable across releases
+  "payload": { … },                    // method‑specific arguments
+  "auth_token": "hex‑base64‑string"    // HMAC token for authentication (optional but recommended)
+}
