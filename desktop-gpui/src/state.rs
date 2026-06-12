@@ -11,7 +11,7 @@ pub struct SharedState {
     /// Current configuration loaded from disk or edited in the UI.
     pub config: RqbitDesktopConfig,
     /// Shared reference to the IPC service that talks to the librqbit session.
-    pub ipc: Arc<IpcService>,
+    pub ipc: Arc<ipc::IpcService>,
 }
 
 /// Helper trait that allows any `gpui::Context` to quickly obtain the IPC service.
