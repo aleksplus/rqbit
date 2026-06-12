@@ -2,10 +2,14 @@ use std::sync::Arc;
 
 pub use librqbit::Api;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, ApiAddTorrentResponse, ApiError, ApiTorrentListOpts,
-    EmptyJsonResponse, SessionStatsSnapshot, TorrentIdOrHash, TorrentListResponse, TorrentStats,
-    api::PeerStatsFilter,
-    http_api_types::PeerStatsSnapshot,
+    AddTorrent,
+    AddTorrentOptions,
+    ApiError,
+    TorrentStats,
+    api::{ApiAddTorrentResponse, ApiTorrentListOpts, EmptyJsonResponse, TorrentListResponse},
+    http_api_types::{PeerStatsFilter, PeerStatsSnapshot},
+    // librqbit::torrent_state::live::peer::stats::snapshot::PeerStatsFilter,
+    session_stats::snapshot::SessionStatsSnapshot,
 };
 
 #[derive(Clone)]
@@ -59,11 +63,11 @@ impl IpcService {
         let live = handle
             .live()
             .ok_or_else(|| ApiError::from("Torrent is not live"))?;
-        Ok(live.per_peer_stats_snapshot(
-            filter.unwrap_or_else(|| PeerStatsFilter {
+        Ok(
+            live.per_peer_stats_snapshot(filter.unwrap_or_else(|| PeerStatsFilter {
                 state: librqbit::http_api_types::PeerStatsFilterState::Live,
-            }),
-        ))
+            })),
+        )
     }
 
     pub fn dht_peer_addr(&self) -> Result<librqbit::dht::DhtStats, ApiError> {

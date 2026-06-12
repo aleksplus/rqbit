@@ -15,19 +15,16 @@ use anyhow::Context;
 use config::RqbitDesktopConfig;
 use http::StatusCode;
 use librqbit::{
-    AddTorrent, AddTorrentOptions, Api, ApiError, DhtSessionConfig,
-    Session, SessionOptions, SessionPersistenceConfig, WithStatusError,
+    AddTorrent, AddTorrentOptions, Api, ApiError, DhtSessionConfig, Session, SessionOptions,
+    SessionPersistenceConfig, WithStatusError,
     api::{
-        ApiAddTorrentResponse, ApiTorrentListOpts, EmptyJsonResponse,
-        TorrentDetailsResponse, TorrentIdOrHash, TorrentListResponse,
-        TorrentStats,
+        ApiAddTorrentResponse, ApiTorrentListOpts, EmptyJsonResponse, TorrentDetailsResponse,
+        TorrentIdOrHash, TorrentListResponse, TorrentStats,
     },
     dht::DhtPersistenceConfig,
     http_api_types::{PeerStatsFilter, PeerStatsSnapshot},
     session_stats::snapshot::SessionStatsSnapshot,
-    tracing_subscriber_config_utils::{
-        InitLoggingOptions, InitLoggingResult, init_logging,
-    },
+    tracing_subscriber_config_utils::{InitLoggingOptions, InitLoggingResult, init_logging},
 };
 use librqbit_dualstack_sockets::TcpListener;
 use parking_lot::RwLock;
@@ -35,12 +32,14 @@ use serde::Serialize;
 use tracing::{debug_span, error, info, warn};
 
 use gpui::{
-    App, Application, Bounds, SharedString, Window,
-    WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    App, AppContext, Application, Bounds, SharedString, Window, WindowBounds, WindowOptions, div,
+    prelude::*, px, rgb, size,
 };
 
-use crate::state::{SharedState};
-use ipc::IpcService;
+mod state; 
+use crate::state::SharedState;  
+
+use crate::ipc::IpcService;
 
 /// Simple placeholder component – replace with the real UI later.
 pub struct HelloWorld {
@@ -59,7 +58,9 @@ async fn api_from_config(
     config: RqbitDesktopConfig,
 ) -> anyhow::Result<Api> {
     // Validate configuration first
-    config.validate().context("error validating configuration")?;
+    config
+        .validate()
+        .context("error validating configuration")?;
 
     /* ---------- Persistence ---------------------------------------- */
     let persistence = if config.persistence.disable {
@@ -146,7 +147,7 @@ async fn api_from_config(
                 .as_ref()
                 .map(|f| f.trim())
                 .filter(|s| !s.is_empty())
-                .map(String::to_owned)
+                .map(|f| f.trim().to_owned())
                 .unwrap_or_else(|| {
                     format!(
                         "rqbit-desktop@{}",
@@ -172,10 +173,8 @@ async fn api_from_config(
 
         // Run the HTTP API in its own task
         let http_api_task = async move {
-            let listener =
-                TcpListener::bind_tcp(listen_addr, Default::default()).with_context(|| {
-                    format!("error listening on {}", listen_addr)
-                })?;
+            let listener = TcpListener::bind_tcp(listen_addr, Default::default())
+                .with_context(|| format!("error listening on {}", listen_addr))?;
             librqbit::http_api::HttpApi::new(api_clone, Some(http_api_opts))
                 .make_http_api_and_run(listener, upnp_router)
                 .await
@@ -238,7 +237,7 @@ async fn main() {
     /* ---------- GPUI --------------------------------------------------- */
     Application::new().run(|cx: &mut App| {
         // Inject the shared state into GPUI
-        cx.set_context(shared_state.clone());
+        cx.set_global(shared_state.clone());
 
         let bounds = Bounds::centered(None, size(px(700.), px(500.0)), cx);
         cx.open_window(
@@ -247,7 +246,9 @@ async fn main() {
                 ..Default::default()
             },
             |_, cx| {
-                cx.new(|_| HelloWorld { text: "World".into() })
+                cx.new(|_| HelloWorld {
+                    text: "World".into(),
+                })
             },
         )
         .unwrap();

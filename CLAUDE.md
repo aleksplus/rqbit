@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-rqbit is a BitTorrent client written in Rust with an HTTP API, Web UI, and desktop app (Tauri). The library (`librqbit`) can also be used standalone.
+rqbit is a BitTorrent client written in Rust and desktop app (GPUI). The library (`librqbit`) can also be used standalone.
 
 ## Build Commands
 
@@ -12,8 +12,8 @@ rqbit is a BitTorrent client written in Rust with an HTTP API, Web UI, and deskt
 # Build (release)
 cargo build --release
 
-# Build with webui feature (requires npm installed)
-cargo build --release --features webui
+# Build with gpui feature (requires npm installed)
+cargo build --release --features gpui
 
 # Run tests
 cargo test                    # default members only
@@ -27,12 +27,6 @@ cargo test -p librqbit <test_name>   # test in specific crate
 cargo fmt --all -- --check
 cargo clippy --all-targets
 
-# Format webui/desktop TypeScript (run from repo root)
-npm run format           # format all
-npm run format:check     # check only
-
-# Desktop app. You cannot test it or see it, so don't bother running expensive "cargo tauri build"
-cd desktop && npm install && tsc --noEmit
 ```
 
 ## Development Server
@@ -43,7 +37,7 @@ cd desktop && npm install && tsc --noEmit
 make testserver
 
 # Run webui in dev mode (hot reload vite server). Points to http://localhost:3031.
-make webui-dev
+# make webui-dev
 ```
 
 @crates/librqbit/webui/CLAUDE.md has some details on webui if needed.
@@ -69,7 +63,6 @@ The main library - the binary is just a thin CLI wrapper. Key components:
 - **Session** (`session.rs`): Central coordinator managing torrents, DHT, peer connections, and persistence. Entry point for the library.
 - **TorrentState** (`torrent_state/`): State machine for torrent lifecycle - initializing, live (downloading/seeding), paused
 - **Storage** (`storage/`): Pluggable storage backends (filesystem, mmap) with middleware support (caching, timing)
-- **HTTP API** (`http_api/`): REST API handlers for torrent management, streaming, DHT stats
 
 ### Supporting Crates
 - `bencode` - Bencode serialization/deserialization
@@ -82,11 +75,6 @@ The main library - the binary is just a thin CLI wrapper. Key components:
 - `buffers` - Binary buffer utilities, small wrappers around bytes::Bytes and &[u8].
 - `sha1w` - SHA1 wrapper (supports crypto-hash or openssl backends)
 
-### Web UI (`crates/librqbit/webui`)
-React + TypeScript + Tailwind CSS frontend. Shared between the HTTP API web interface and the Tauri desktop app.
-
-### Desktop App (`desktop/`)
-Tauri wrapper around the web UI.
 
 ## Rust Development
 
