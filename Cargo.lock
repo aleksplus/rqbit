@@ -2134,6 +2134,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "desktop-gpui"
+version = "9.0.0-rc.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "directories",
+ "gethostname",
+ "gpui",
+ "http",
+ "librqbit",
+ "librqbit-dualstack-sockets",
+ "metrics-exporter-prometheus",
+ "parking_lot",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_with",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7319,13 +7342,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "rqbit-desktop-gpui"
-version = "9.0.0-rc.0"
-dependencies = [
- "gpui",
 ]
 
 [[package]]
