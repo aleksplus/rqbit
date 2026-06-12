@@ -113,32 +113,31 @@ Tauri wrapper around the web UI.
 - Prefer using Serena MCP instead of searching / reading / writing raw files when makes sense.
 - **Always run `npm run format` after modifying webui or desktop TypeScript/TSX files.**
 
-# Native‑only IPC (Rust plugin → Unix domain socket)
 
-This repository now exposes a **native Rust plugin** that can be loaded by GPUI.  
-All communication is done via a **Unix domain socket (`/tmp/rqlib-ipc.sock`)** using a thin JSON‑RPC layer.
+# **Native GPUI RPC Interface**
 
-## RPC Methods
+The `desktop‑gpui` binary exposes a Unix‑domain socket IPC that implements the same JSON‑RPC contract as the HTTP API.  
+All calls are authenticated with an HMAC token derived from a secret stored in `desktop‑gpui/secrets.toml`.  
+The socket path is `/tmp/rqlib-ipc.sock` (only bound on localhost).
 
-| # | Method (JSON key)                | Description / Purpose |
-|---|----------------------------------|-----------------------|
-| 1 | `create_magnet`                  | Create a new torrent entry. Returns the generated `tid`. |
-| 2 | `get_state`                      | Query the internal status of an existing torrent (`live`, `seeding`, `paused`). |
-| 3 | `set_peer_limit`                 | Set the maximum number of peers for the given torrent. |
-| 4 | `get_peer_list`                  | Retrieve a list of active peer addresses (IP/port, role). |
-| 5 | `dht_peer_addr`                  | Query DHT nodes that are downloadable/seeding/trackers for a hash. |
-| 6 | `stats`                          | Aggregate usage statistics (bytes downloaded, peers alive). |
-| 7 | `get_session_config` *(optional)*| Read low‑level config stored in the SQLite session file – rarely needed from GPUI. |
-| 8 | `seed_magnet` *(optional)*       | Start seeding a magnet from an external source directory; currently mirrors existing web UI flow. |
-| 9 | `tracker_list`                   | List registered tracker URLs for a torrent. |
-|10 | `delete_torrent`                 | Remove a torrent entry from the session database. |
+| # | Method | Description |
+|---|--------|-------------|
+| 1 | `create_magnet` | Create a new torrent entry. Returns the generated `tid`. |
+| 2 | `get_state` | Query the internal status of an existing torrent (`live`, `seeding`, `paused`). |
+| 3 | `set_peer_limit` | Set the maximum number of peers for a torrent. |
+| 4 | `get_peer_list` | Retrieve a list of active peer addresses (IP/port, role). |
+| 5 | `dht_peer_addr` | Query DHT nodes that are downloadable/seeding/trackers for a hash. |
+| 6 | `stats` | Aggregate usage statistics (bytes downloaded, peers alive). |
+| 7 | `get_session_config` | Read low‑level config stored in the SQLite session file. |
+| 8 | `seed_magnet` | Start seeding a magnet from an external source directory. |
+| 9 | `tracker_list` | List registered tracker URLs for a torrent. |
+|10 | `delete_torrent` | Remove a torrent entry from the session database. |
 
-### Request Payload Format
+## Request Payload
 
 ```json
 {
-  "cmd": "<method-name>",               // required – RPC identifier (see table)
-  "version": "1.0",                     // API version; keep stable across releases
-  "payload": { … },                    // method‑specific arguments
-  "auth_token": "hex‑base64‑string"    // HMAC token for authentication (optional but recommended)
+  "cmd": "<method-name>",
+  "payload": { … },          // method‑specific arguments
+  "auth_token": "<hmac>"      // HMAC of the payload using secret from `secrets.toml`
 }
