@@ -1,11 +1,21 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
+use crate::config::RqbitDesktopConfig;
 use crate::http_api::HttpClient;
-use librqbit::{Api, ApiError};
 #[derive(Clone)]
 pub struct SharedState {
-    pub config: crate::config::RqbitDesktopConfig,
+    pub config: RqbitDesktopConfig,
     pub http_client: Arc<HttpClient>,
+}
+
+impl SharedState {
+    /// Path to the config file – handy for the configuration modal.
+    pub fn config_path(&self) -> std::path::PathBuf {
+        directories::ProjectDirs::from("com", "rqbit", "desktop")
+            .expect("directories::ProjectDirs::from")
+            .config_dir()
+            .join("config.json")
+    }
 }
 
 pub async fn init_shared_state(

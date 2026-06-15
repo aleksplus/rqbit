@@ -1,10 +1,9 @@
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use anyhow::Context;
-use gpui_http_client::{Client, FormData};
-use librqbit::api::{TorrentDetailsResponse, TorrentListResponse, TorrentStats, PeerStatsSnapshot};
-use librqbit::http_api_types::{PeerStatsFilter};
-
+use gpui_http_client::{Client, Response};
+use librqbit::api::{PeerStatsSnapshot, TorrentDetailsResponse, TorrentListResponse, TorrentStats};
+use librqbit::http_api_types::PeerStatsFilter;
 /// A lightweight HTTP client that talks to the rqbit REST API.
 #[derive(Clone)]
 pub struct HttpClient {
@@ -16,53 +15,65 @@ impl HttpClient {
     /// Create a new client. `base_url` should be something like
     /// "http://127.0.0.1:3030".
     pub fn new(base_url: String) -> Self {
-        Self { base_url, client: Client::new() }
+        let client = Client::new();
+        Self { base_url, client }
     }
 
-    /// GET /torrents?with_stats=true|false
+    async fn check_response(
+        mut r: gpui_http_client::Response,
+    ) -> anyhow::Result<gpui_http_client::Response> {
+        if r.status().is_success() {
+            return Ok(r);
+        }
+        let status = r.status();
+        let url = r.url().clone();
+        // Try to read body for error message
+        let body = r
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unable to read body>".to_string());
+        anyhow::bail!("{} -> {}: {}", url, status, body)
+    }
+
+    async fn json_response<T: serde::de::DeserializeOwned + std::any::Any>(
+        r: gpui_http_client::Response,
+    ) -> anyhow::Result<T> {
+        let r = Self::check_response(r).await?;
+        let bytes = r.bytes().await.map_err(|e| anyhow::anyhow!(e))?;
+        let val: T = serde_json::from_slice(&bytes)?;
+        Ok(val)
+    }
+
     pub async fn list_torrents(&self, with_stats: bool) -> anyhow::Result<TorrentListResponse> {
         let mut url = format!("{}/torrents", self.base_url);
         if with_stats {
             url.push_str("?with_stats=true");
         }
-        let resp = self.client.get(&url).await?;
-        let data: TorrentListResponse = serde_json::from_slice(&resp)?;
-        Ok(data)
+        let resp = self.client.get(&url).send().await?;
+        Self::json_response(resp).await
     }
 
-    /// GET /torrents/{id}
-    pub async fn get_torrent_details(&self, id: usize) -> anyhow::Result<TorrentDetailsResponse> {
+    pub async fn torrent_details(&self, id: usize) -> anyhow::Result<TorrentDetailsResponse> {
         let url = format!("{}/torrents/{}", self.base_url, id);
-        let resp = self.client.get(&url).await?;
-        let data: TorrentDetailsResponse = serde_json::from_slice(&resp)?;
-        Ok(data)
+        let resp = self.client.get(&url).send().await?;
+        Self::json_response(resp).await
     }
 
-    /// GET /torrents/{id}/stats/v1
-    pub async fn get_torrent_stats(&self, id: usize) -> anyhow::Result<TorrentStats> {
-        let url = format!("{}/torrents/{}/stats/v1", self.base_url, id);
-        let resp = self.client.get(&url).await?;
-        let data: TorrentStats = serde_json::from_slice(&resp)?;
-        Ok(data)
+    pub async fn pause(&self, id: usize) -> anyhow::Result<()> {
+        let url = format!("{}/torrents/{}/pause", self.base_url, id);
+        let resp = self.client.post(&url).send().await?;
+        Self::check_response(resp).await.map(|_| ())
     }
 
-    /// GET /torrents/{id}/peer_stats?state=live
-    pub async fn get_peer_stats(&self, id: usize, filter_state: PeerStatsFilter) -> anyhow::Result<PeerStatsSnapshot> {
-        let url = format!("{}/torrents/{}/peer_stats?state={}", self.base_url, id, filter_state);
-        let resp = self.client.get(&url).await?;
-        let data: PeerStatsSnapshot = serde_json::from_slice(&resp)?;
-        Ok(data)
+    pub async fn delete(&self, id: usize) -> anyhow::Result<()> {
+        let url = format!("{}/torrents/{}/delete", self.base_url, id);
+        let resp = self.client.post(&url).send().await?;
+        Self::check_response(resp).await.map(|_| ())
     }
 
-    /// POST /torrents?overwrite=true&list_only=false&only_files=...
-    /// For brevity, this example only implements a minimal upload of URL.
-    pub async fn upload_torrent_from_url(&self, url: &str) -> anyhow::Result<()> {
-        let api_url = format!("{}/torrents?overwrite=true", self.base_url);
-        let mut form = FormData::new();
-        form.append("url", url);
-        let _resp = self.client.post(&api_url, Some(form)).await?;
-        Ok(())
+    pub async fn start(&self, id: usize) -> anyhow::Result<()> {
+        let url = format!("{}/torrents/{}/start", self.base_url, id);
+        let resp = self.client.post(&url).send().await?;
+        Self::check_response(resp).await.map(|_| ())
     }
-
-    /// Other actions (pause, start, delete) can be added similarly.
 }
