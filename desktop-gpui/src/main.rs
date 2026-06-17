@@ -18,6 +18,8 @@ mod ui;
 
 use crate::state::SharedState;
 
+use librqbit::tracing_subscriber_config_utils::{InitLoggingOptions, InitLoggingResult, init_logging};
+
 /// Placeholder until MainPanel is wired
 pub struct HelloWorld {
     text: SharedString,
@@ -30,7 +32,7 @@ impl Render for HelloWorld {
 }
 
 async fn init_shared_state(
-    init_logging: crate::tracing_subscriber_config_utils::InitLoggingResult,
+    _init_logging: InitLoggingResult,
 ) -> anyhow::Result<SharedState> {
     // Load config
     let config_path = directories::ProjectDirs::from("com", "rqbit", "desktop")
@@ -58,8 +60,8 @@ async fn init_shared_state(
 #[tokio::main]
 async fn main() {
     // Logging
-    let init_logging_result = crate::tracing_subscriber_config_utils::init_logging(
-        crate::tracing_subscriber_config_utils::InitLoggingOptions {
+    let init_logging_result = init_logging(
+        InitLoggingOptions {
             default_rust_log_value: Some("info"),
             log_file: None,
             log_file_rust_log: None,
