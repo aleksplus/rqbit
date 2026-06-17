@@ -8,15 +8,15 @@ mod state; // shared_state
 
 use std::sync::Arc;
 
-use anyhow::Context;
 use config::RqbitDesktopConfig;
 use gpui::{
     App, Application, Bounds, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*,
-    px, rgb, size,
+    px, size,
 };
 
+mod ui;
+
 use crate::state::SharedState;
-use crate::ui::main_panel::MainPanel; // will be replaced later
 
 /// Placeholder until MainPanel is wired
 pub struct HelloWorld {
@@ -92,9 +92,7 @@ async fn main() {
             },
             |_, cx| {
                 // Replace with MainPanel when ready
-                cx.new(|_| HelloWorld {
-                    text: "World".into(),
-                })
+                cx.new(|_| MainPanel::default())
             },
         )
         .unwrap();
