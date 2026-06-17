@@ -13,6 +13,7 @@ use gpui::{
     App, Application, Bounds, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*,
     px, size,
 };
+use tracing::info;
 
 mod ui;
 
@@ -82,7 +83,7 @@ async fn main() {
 
     // Run GPUI
     Application::new().run(|cx: &mut App| {
-        cx.set_global(shared_state.clone());
+        // cx.set_global(shared_state.clone());
 
         let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
         cx.open_window(
@@ -92,7 +93,7 @@ async fn main() {
             },
             |_, cx| {
                 // Replace with MainPanel when ready
-                cx.new(|_| MainPanel::default())
+                cx.new(|_| ui::main_panel::MainPanel::default())
             },
         )
         .unwrap();

@@ -25,7 +25,10 @@ impl HttpApiClient {
         })
     }
 
-    async fn check_response<T>(mut r: Response<T>) -> Result<Response<T>> {
+    async fn check_response<T>(mut r: Response<T>) -> Result<Response<T>>
+    where
+        T: serde::de::DeserializeOwned + Send,
+    {
         if r.status().is_success() {
             return Ok(r);
         }
@@ -39,7 +42,10 @@ impl HttpApiClient {
         anyhow::bail!("{} -> {}: {}", url, status, body)
     }
 
-    async fn json_response<T: serde::de::DeserializeOwned, U: T>(r: Response<U>) -> Result<T> {
+    async fn json_response<T>(mut r: Response<T>) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned + Send,
+    {
         let r = Self::check_response(r).await?;
         let bytes = r.bytes().await.map_err(|e| anyhow::anyhow!(e))?;
         let val: T = serde_json::from_slice(&bytes)?;
