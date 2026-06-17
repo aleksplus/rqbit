@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::config::RqbitDesktopConfig;
-use crate::http_api::HttpClient;
+use crate::http_api::HttpApiClient;
 #[derive(Clone)]
 pub struct SharedState {
     pub config: RqbitDesktopConfig,
-    pub http_client: Arc<HttpClient>,
+    pub http_client: Arc<HttpApiClient>,
 }
 
 impl SharedState {
@@ -33,14 +33,14 @@ pub async fn init_shared_state(
         cfg
     };
 
-    // Create HttpClient
+    // Create HttpApiClient
     let base_url = if let Some(addr) = config.http_api.listen_addr {
         // Convert "127.0..:3030" to http URL
         format!("http://{}", addr)
     } else {
         panic!("HTTP API listen address not configured");
     };
-    let http_client = Arc::new(HttpClient::new(base_url));
+    let http_client = Arc::new(HttpApiClient::new(base_url));
 
     Ok(SharedState {
         config,

@@ -1,25 +1,28 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use gpui_http_client::{HttpClient as GpuiClient, Response};
+use gpui_http_client::{HttpClient, Response};
 use librqbit::api::{TorrentDetailsResponse, TorrentListResponse};
 use url::Url;
 
 /// A lightweight HTTP client that talks to the rqbit REST API.
 #[derive(Clone)]
-pub struct HttpClient {
+pub struct HttpApiClient {
     base_url: Url,
-    client: GpuiClient,
+    client: Arc<dyn HttpClient>,
 }
 
-impl HttpClient {
+impl HttpApiClient {
     /// Create a new client. `base_url` should be something like
     /// "http://127.0.0.1:3030".
     pub fn new(base_url: String) -> Result<Self> {
-        let base = Url::parse(&base_url)
-            .with_context(|| format!("invalid base URL: {}", base_url))?;
-        let client = GpuiClient::new();
-        Ok(Self { base_url: base, client })
+        let base =
+            Url::parse(&base_url).with_context(|| format!("invalid base URL: {}", base_url))?;
+        let client = Arc::new(HttpClient::new());
+        Ok(Self {
+            base_url: base,
+            client,
+        })
     }
 
     async fn check_response<T>(mut r: Response<T>) -> Result<Response<T>> {
@@ -29,7 +32,10 @@ impl HttpClient {
         let status = r.status();
         let url = r.url().clone();
         // Try to read body for error message
-        let body = r.text().await.unwrap_or_else(|_| "<unable to read body>".to_string());
+        let body = r
+            .text()
+            .await
+            .unwrap_or_else(|_| "<unable to read body>".to_string());
         anyhow::bail!("{} -> {}: {}", url, status, body)
     }
 

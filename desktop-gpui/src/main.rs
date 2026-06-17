@@ -18,7 +18,9 @@ mod ui;
 
 use crate::state::SharedState;
 
-use librqbit::tracing_subscriber_config_utils::{InitLoggingOptions, InitLoggingResult, init_logging};
+use librqbit::tracing_subscriber_config_utils::{
+    InitLoggingOptions, InitLoggingResult, init_logging,
+};
 
 /// Placeholder until MainPanel is wired
 pub struct HelloWorld {
@@ -31,9 +33,7 @@ impl Render for HelloWorld {
     }
 }
 
-async fn init_shared_state(
-    _init_logging: InitLoggingResult,
-) -> anyhow::Result<SharedState> {
+async fn init_shared_state(_init_logging: InitLoggingResult) -> anyhow::Result<SharedState> {
     // Load config
     let config_path = directories::ProjectDirs::from("com", "rqbit", "desktop")
         .expect("directories::ProjectDirs::from")
@@ -47,7 +47,7 @@ async fn init_shared_state(
     };
 
     // HTTP client
-    let http_client = Arc::new(crate::http_api::HttpClient::new(
+    let http_client = Arc::new(crate::http_api::HttpApiClient::new(
         "http://127.0.0.1:3030".to_string(),
     ));
 
@@ -60,14 +60,12 @@ async fn init_shared_state(
 #[tokio::main]
 async fn main() {
     // Logging
-    let init_logging_result = init_logging(
-        InitLoggingOptions {
-            default_rust_log_value: Some("info"),
-            log_file: None,
-            log_file_rust_log: None,
-            log_file_json: false,
-        },
-    )
+    let init_logging_result = init_logging(InitLoggingOptions {
+        default_rust_log_value: Some("info"),
+        log_file: None,
+        log_file_rust_log: None,
+        log_file_json: false,
+    })
     .expect("failed to initialise logging");
 
     // File‑descriptor limit
