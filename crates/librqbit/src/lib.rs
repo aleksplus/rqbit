@@ -108,9 +108,6 @@ pub use librqbit_core::magnet::*;
 pub use librqbit_core::peer_id::*;
 pub use librqbit_core::torrent_metainfo::*;
 
-#[cfg(feature = "gpui")]
-pub use librqbit_gpui::*;
-
 #[cfg(test)]
 mod tests;
 

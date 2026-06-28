@@ -1,62 +1,23 @@
-// desktop‑gpui/src/main.rs
-
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use gpui::{App, Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
+use gpui_component::Root;
+use tracing::{info, warn};
+
 mod config;
-pub mod http_api;
-mod state; // shared_state
-
-use std::sync::Arc;
-
-use config::RqbitDesktopConfig;
-use gpui::{
-    App, Application, Bounds, SharedString, Window, WindowBounds, WindowOptions, div, prelude::*,
-    px, size,
-};
-use tracing::info;
-
 mod ui;
 
-use crate::state::SharedState;
-
-use librqbit::tracing_subscriber_config_utils::{
-    InitLoggingOptions, InitLoggingResult, init_logging,
+mod state;
+use crate::{
+    state::{State, StateShared},
+    ui::main_panel,
 };
+impl gpui::Global for state::State {}
 
-/// Placeholder until MainPanel is wired
-pub struct HelloWorld {
-    text: SharedString,
-}
-
-impl Render for HelloWorld {
-    fn render(&mut self, _window: &mut Window, _cx: &mut gpui::Context<Self>) -> impl IntoElement {
-        div().child(format!("Hello, {}!", &self.text))
-    }
-}
-
-async fn init_shared_state(_init_logging: InitLoggingResult) -> anyhow::Result<SharedState> {
-    // Load config
-    let config_path = directories::ProjectDirs::from("com", "rqbit", "desktop")
-        .expect("directories::ProjectDirs::from")
-        .config_dir()
-        .join("config.json");
-    let config: RqbitDesktopConfig = {
-        let rdr = std::io::BufReader::new(std::fs::File::open(&config_path)?);
-        let mut cfg: RqbitDesktopConfig = serde_json::from_reader(rdr)?;
-        cfg.persistence.fix_backwards_compat();
-        cfg
-    };
-
-    // HTTP client
-    let http_client = Arc::new(crate::http_api::HttpApiClient::new(
-        "http://127.0.0.1:3030".to_string(),
-    ));
-
-    Ok(SharedState {
-        config,
-        http_client,
-    })
-}
+use librqbit::{
+    api::ApiTorrentListOpts,
+    tracing_subscriber_config_utils::{InitLoggingOptions, init_logging},
+};
 
 #[tokio::main]
 async fn main() {
@@ -67,35 +28,80 @@ async fn main() {
         log_file_rust_log: None,
         log_file_json: false,
     })
-    .expect("failed to initialise logging");
+    .unwrap();
 
-    // File‑descriptor limit
-    if let Ok(limit) = librqbit::try_increase_nofile_limit() {
-        info!(limit = limit, "increased open file limit");
-    }
+    match librqbit::try_increase_nofile_limit() {
+        Ok(limit) => info!(limit = limit, "increased open file limit"),
+        Err(e) => warn!("failed increasing open file limit: {:#}", e),
+    };
 
     // Shared state
-    let shared_state = init_shared_state(init_logging_result)
-        .await
-        .expect("failed to initialise shared state");
+    let shared_state = State::new(init_logging_result).await;
 
     info!("GPUI application started – state ready");
 
     // Run GPUI
-    Application::new().run(|cx: &mut App| {
-        // cx.set_global(shared_state.clone());
+    Application::new().run(move |cx: &mut App| {
+        // cx.set_global(shared_state);
 
-        let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                ..Default::default()
-            },
-            |_, cx| {
-                // Replace with MainPanel when ready
-                cx.new(|_| ui::main_panel::MainPanel::default())
-            },
-        )
-        .unwrap();
+        gpui_component::init(cx);
+
+        // let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
+
+        // fn load_initial_data(&mut self, cx: &mut Context<Self>) {
+        //     // Spawn a background task managed by GPUI's built-in executor
+        //     cx.spawn(|this, mut cx| async move {
+        //         // 1. Do your heavy async work here (API calls, file reads, etc.)
+        //         let fetched_text = fake_api_call().await;
+
+        //         // 2. Safe bridge back to the UI thread to update your state
+        //         let _ = this.update(&mut cx, |view, cx| {
+        //             view.data = Some(fetched_text);
+
+        //             // 3. Tell GPUI that the data changed and it needs to render again
+        //             cx.notify();
+        //         });
+        //     })
+        //     .detach(); // Detach lets the task run independently in the background
+        // }
+        // let client = shared_state
+        //     .api()?
+        //     .api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
+        // // Demo: block on the future; in real code use cx.spawn.
+        // self.torrents = client.list_torrents(true).await.unwrap().torrents; // `block_on` is only for demonstration
+
+        cx.spawn(async move |cx| {
+            // let _ = cx.update(|cx| {
+            //     // cx.view.data = Some(fetched_text);
+
+            //     // 3. Tell GPUI that the data changed and it needs to render again
+            //     cx.notify();
+            // });
+            cx.open_window(WindowOptions::default(), |window, cx| {
+                let view = cx.new(|_| ui::main_panel::MainPanel);
+                // This first level on the window, should be a Root.
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+            .expect("Failed to open window");
+
+            // cx.open_window(
+            //     WindowOptions {
+            //         window_bounds: Some(WindowBounds::Windowed(bounds)),
+            //         ..Default::default()
+            //     },
+            //     |_, cx| cx.new(|_| ui::main_panel::MainPanel::new()),
+            // )
+            // .unwrap();
+        })
+        .detach();
+
+        // cx.open_window(
+        //     WindowOptions {
+        //         window_bounds: Some(WindowBounds::Windowed(bounds)),
+        //         ..Default::default()
+        //     },
+        //     |_, cx| cx.new(|_| ui::main_panel::MainPanel::default()),
+        // )
+        // .unwrap();
     });
 }

@@ -9,7 +9,7 @@ publish = false
 
 [dependencies]
 gpui.workspace = true
-gpui_http_client.workspace = true
+gpui-component = "0.5.1"
 url.workspace = true
 librqbit = { workspace = true, features = [
     "tracing-subscriber-utils",

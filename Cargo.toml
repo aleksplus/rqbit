@@ -9,7 +9,6 @@ members = [
     "crates/sha1w",
     "crates/librqbit_core",
     "crates/librqbit_lsd",
-    "crates/librqbit_gpui",
     "crates/peer_binary_protocol",
     "crates/dht",
     "crates/upnp",
@@ -61,7 +60,6 @@ bencode = { path = "crates/bencode", package = "librqbit-bencode", version = "9.
 buffers = { path = "crates/buffers", package = "librqbit-buffers", version = "9.0.0-rc.0" }
 clone_to_owned = { path = "crates/clone_to_owned", package = "librqbit-clone-to-owned", version = "9.0.0-rc.0" }
 librqbit-core = { path = "crates/librqbit_core", version = "9.0.0-rc.0", default-features = false }
-librqbit-gpui = { path = "crates/librqbit_gpui", version = "9.0.0-rc.0", default-features = false }
 dht = { path = "crates/dht", package = "librqbit-dht", version = "9.0.0-rc.0", default-features = false }
 librqbit-lsd = { path = "crates/librqbit_lsd", version = "9.0.0-rc.0", default-features = false }
 peer_binary_protocol = { path = "crates/peer_binary_protocol", package = "librqbit-peer-protocol", version = "9.0.0-rc.0", default-features = false }
@@ -102,8 +100,6 @@ data-encoding = "2"
 directories = "6"
 encoding_rs = "0.8"
 futures = "0.3"
-gpui = "0.2.2"
-gpui_http_client = "0.2.2"
 gethostname = "1"
 governor = "0.10"
 hex = "0.4"
