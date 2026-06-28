@@ -1,7 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use gpui::{App, Application, Bounds, WindowBounds, WindowOptions, prelude::*, px, size};
-use gpui_component::Root;
+// use gpui::{
+//     App, Application, Bounds, Window, WindowBounds, WindowDecorations, WindowOptions, div, prelude::*, px, size
+// };
+use gpui::*;
+use gpui_component::{ActiveTheme as _, Root, StyledExt as _, h_flex, v_flex};
 use tracing::{info, warn};
 
 mod config;
@@ -18,6 +21,55 @@ use librqbit::{
     api::ApiTorrentListOpts,
     tracing_subscriber_config_utils::{InitLoggingOptions, init_logging},
 };
+
+struct RootBorderlessExample;
+
+impl Render for RootBorderlessExample {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .gap_4()
+            .p_8()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(
+                div()
+                    .text_2xl()
+                    .font_semibold()
+                    .child("Root::bordered(false)"),
+            )
+            .child(
+                div()
+                    .max_w(px(560.))
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "This window requests client-side decorations, while Root disables GPUI Component's window border wrapper.",
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(
+                        div()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .px_3()
+                            .py_2()
+                            .child("Root.bordered = false"),
+                    )
+                    .child(
+                        div()
+                            .rounded_md()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .px_3()
+                            .py_2()
+                            .child("window_decorations = Client"),
+                    ),
+            )
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -42,12 +94,6 @@ async fn main() {
 
     // Run GPUI
     Application::new().run(move |cx: &mut App| {
-        // cx.set_global(shared_state);
-
-        gpui_component::init(cx);
-
-        // let bounds = Bounds::centered(None, size(px(700.), px(500.)), cx);
-
         // fn load_initial_data(&mut self, cx: &mut Context<Self>) {
         //     // Spawn a background task managed by GPUI's built-in executor
         //     cx.spawn(|this, mut cx| async move {
@@ -70,38 +116,24 @@ async fn main() {
         // // Demo: block on the future; in real code use cx.spawn.
         // self.torrents = client.list_torrents(true).await.unwrap().torrents; // `block_on` is only for demonstration
 
-        cx.spawn(async move |cx| {
-            // let _ = cx.update(|cx| {
-            //     // cx.view.data = Some(fetched_text);
+        gpui_platform::application().run(move |cx| {
+            gpui_component::init(cx);
 
-            //     // 3. Tell GPUI that the data changed and it needs to render again
-            //     cx.notify();
-            // });
-            cx.open_window(WindowOptions::default(), |window, cx| {
-                let view = cx.new(|_| ui::main_panel::MainPanel);
-                // This first level on the window, should be a Root.
-                cx.new(|cx| Root::new(view, window, cx))
+            let window_options = WindowOptions {
+                titlebar: None,
+                window_bounds: Some(WindowBounds::centered(size(px(640.), px(320.)), cx)),
+                window_decorations: Some(WindowDecorations::Client),
+                ..Default::default()
+            };
+
+            cx.spawn(async move |cx| {
+                cx.open_window(window_options, |window, cx| {
+                    let view = cx.new(|_| RootBorderlessExample);
+                    cx.new(|cx| Root::new(view, window, cx).bordered(false))
+                })
+                .expect("Failed to open window");
             })
-            .expect("Failed to open window");
-
-            // cx.open_window(
-            //     WindowOptions {
-            //         window_bounds: Some(WindowBounds::Windowed(bounds)),
-            //         ..Default::default()
-            //     },
-            //     |_, cx| cx.new(|_| ui::main_panel::MainPanel::new()),
-            // )
-            // .unwrap();
-        })
-        .detach();
-
-        // cx.open_window(
-        //     WindowOptions {
-        //         window_bounds: Some(WindowBounds::Windowed(bounds)),
-        //         ..Default::default()
-        //     },
-        //     |_, cx| cx.new(|_| ui::main_panel::MainPanel::default()),
-        // )
-        // .unwrap();
+            .detach();
+        });
     });
 }

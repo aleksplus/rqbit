@@ -8,8 +8,9 @@ repository = "https://github.com/anthropics/rqbit"
 publish = false
 
 [dependencies]
-gpui.workspace = true
-gpui-component = "0.5.1"
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = ["font-kit"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component" }
 url.workspace = true
 librqbit = { workspace = true, features = [
     "tracing-subscriber-utils",
@@ -40,4 +41,4 @@ toml = "0.8"
 
 [features]
 default = []
-upnp = ["librqbit/upnp-serve-adapter"]
+disable-upload = ["librqbit/disable-upload"]
