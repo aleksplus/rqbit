@@ -26,7 +26,7 @@ pub struct StateShared {
 
 pub struct State {
     config_filename: String,
-    shared: Arc<RwLock<SharedState>>,
+    shared: Arc<RwLock<StateShared>>,
     init_logging: InitLoggingResult,
 }
 
@@ -221,7 +221,7 @@ impl State {
             }
         }
 
-        let existing = self.shared.write().as_mut();
+        let mut existing = self.shared.write();
 
         existing.api.session().stop().await;
 
