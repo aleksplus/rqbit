@@ -21,12 +21,12 @@ use tracing::{debug_span, error, warn};
 #[derive(Clone)]
 pub struct StateShared {
     config: RqbitDesktopConfig,
-    api: Option<Api>,
+    api: Arc<Api>,
 }
 
 pub struct State {
     config_filename: String,
-    shared: Arc<RwLock<Option<StateShared>>>,
+    shared: Arc<RwLock<SharedState>>,
     init_logging: InitLoggingResult,
 }
 
@@ -185,65 +185,53 @@ impl State {
             .expect("to_str()")
             .to_owned();
 
-        if let Ok(config) = read_config(&config_filename) {
-            let api = api_from_config(&init_logging, &config)
-                .await
-                .map_err(|e| {
-                    warn!(error=?e, "error reading configuration");
-                    e
-                })
-                .ok();
-            let shared = Arc::new(RwLock::new(Some(StateShared { config, api })));
+        let config = if let Ok(cfg) = read_config(&config_filename) {
+            cfg
+        } else {
+            RqbitDesktopConfig::default()
+        };
 
-            return Self {
-                config_filename,
-                shared,
-                init_logging,
-            };
-        }
+        let api = api_from_config(&init_logging, &config)
+            .await
+            .map_err(|e| {
+                warn!(error=?e, "error reading configuration");
+                e
+            })
+            .context("error creating state")?;
+
+        let shared = Arc::new(RwLock::new(StateShared { config, api }));
 
         Self {
             config_filename,
+            shared,
             init_logging,
-            shared: Arc::new(RwLock::new(None)),
         }
     }
 
-    fn api(&self) -> Result<Api, ApiError> {
-        let g = self.shared.read();
-        g.as_ref()
-            .and_then(|a| a.api.clone())
-            .with_status_error(StatusCode::FAILED_DEPENDENCY, "not configured")
+    pub fn api(&self) -> Arc<Api> {
+        self.shared.read().api.clone()
     }
 
     async fn configure(&self, config: RqbitDesktopConfig) -> Result<(), ApiError> {
         {
             let g = self.shared.read();
-            if let Some(shared) = g.as_ref()
-                && shared.api.is_some()
-                && shared.config == config
-            {
+            if g.config == config {
                 // The config didn't change, and the API is running, nothing to do.
                 return Ok(());
             }
         }
 
-        let existing = self.shared.write().as_mut().and_then(|s| s.api.take());
+        let existing = self.shared.write().as_mut();
 
-        if let Some(api) = existing {
-            api.session().stop().await;
-        }
+        existing.api.session().stop().await;
 
         let api = api_from_config(&self.init_logging, &config).await?;
         if let Err(e) = write_config(&self.config_filename, &config) {
             error!("error writing config: {:#}", e);
         }
 
-        let mut g = self.shared.write();
-        *g = Some(StateShared {
-            config,
-            api: Some(api),
-        });
+        existing.config = config;
+        existing.api = Arc::new(api);
         Ok(())
     }
 }

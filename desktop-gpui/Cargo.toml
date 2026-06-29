@@ -20,7 +20,7 @@ librqbit = { workspace = true, features = [
     "prometheus",
     "default-tls"
 ] }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
 base64 = { workspace = true }
 http = { workspace = true }

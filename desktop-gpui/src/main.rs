@@ -128,8 +128,8 @@ async fn main() {
 
             cx.spawn(async move |cx| {
                 cx.open_window(window_options, |window, cx| {
-                    let view = cx.new(|_| RootBorderlessExample);
-                    cx.new(|cx| Root::new(view, window, cx).bordered(false))
+                    let view = cx.new(|cx| RootBorderlessExample);
+                    view
                 })
                 .expect("Failed to open window");
             })

@@ -84,6 +84,37 @@ The main library - the binary is just a thin CLI wrapper. Key components:
 - When fixing compiler warnings, batch all related warnings together and fix them
   in a single pass. Run `cargo check 2>&1` to capture the full list before editing.
 
+## Desktop GPUI Client
+
+The `desktop-gpui` crate provides a native desktop GUI client for rqbit using GPUI (Zed's UI framework). It uses librqbit::Api to communicate with the session, without HTTP endpoints or Prometheus.
+
+### Building
+
+```bash
+# Build the desktop client
+cargo build -p desktop-gpui
+
+# Run the desktop client
+cargo run -p desktop-gpui
+```
+
+### Architecture
+
+- **librqbit::Api-only communication**: The desktop client communicates with the session via IPC, not HTTP.
+- **GPUI framework**: Uses Zed's GPUI for a native, high-performance UI.
+- **Shared state**: Configuration and session state are shared via `Arc<RwLock<SharedState>>`.
+
+### Development
+
+```bash
+# Run with hot reload (if supported)
+cargo run -p desktop-gpui
+
+# Check code
+cargo check -p desktop-gpui
+cargo clippy -p desktop-gpui
+```
+
 ## General Rules
 - Never declare a task complete until tests actually pass and compilation is verified.
   If compilation cannot be verified due to pre-existing errors, explicitly state that caveat.
@@ -100,3 +131,18 @@ The main library - the binary is just a thin CLI wrapper. Key components:
 - If you need to resort to running shell commands, always use "rg" instead of "grep".
 - Prefer using Serena MCP instead of searching / reading / writing raw files when makes sense.
 - **Always run `npm run format` after modifying webui or desktop TypeScript/TSX files.**
+
+## Desktop GPUI Implementation Plan
+
+See the detailed task plan in the desktop-gpui task list:
+- **1️⃣ Cargo & crate setup**: Add dependencies, configure tokio
+- **2️⃣ Shared state abstraction**: Create `SharedState`, implement `IpcExt` trait
+- **3️⃣ Session & IPC initialisation**: Initialize session, store in GPUI context
+- **4️⃣ UI – configuration modal**: Create config modal with form fields
+- **5️⃣ UI – main panel**: Build torrent list table with action buttons
+- **6️⃣ Replace placeholder window**: Update main window to use MainPanel
+- **7️⃣ Logging**: Keep existing logging, remove Prometheus
+- **8️⃣ Integration tests**: Update tests to use real IPC
+- **9️⃣ CI / Documentation**: Add GitHub Actions workflow, update docs
+
+Each task is small enough to be committed in a single PR. See the full task list for details.
