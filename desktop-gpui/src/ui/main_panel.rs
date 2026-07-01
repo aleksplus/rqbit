@@ -1,10 +1,10 @@
 use gpui::*;
 use gpui_component::{
     button::{Button, ButtonVariants},
-    table::{Column, DataTable, TableDelegate, TableState, TableEvent},
+    table::{Column, DataTable, TableDelegate, TableState},
     ActiveTheme as _, StyledExt as _, h_flex, v_flex,
 };
-use librqbit::api::{ApiTorrentListOpts, TorrentIdOrHash};
+use librqbit::api::ApiTorrentListOpts;
 use std::sync::Arc;
 
 use crate::state::State;
@@ -34,8 +34,7 @@ impl MainPanel {
         let state = cx.global::<State>().clone();
 
         let table_state = cx.new(|cx| {
-            TableState::new(TorrentTableDelegate::new(), window, cx)
-                .row_selectable(true)
+            TableState::new(TorrentTableDelegate::new(), window, cx).row_selectable(true)
         });
 
         let mut this = Self {
@@ -65,23 +64,25 @@ impl MainPanel {
                         if let Some(stats) = &t.stats {
                             let st = stats.state.to_string();
                             let prog = if stats.total_bytes > 0 {
-                                let pct = (stats.progress_bytes as f64
-                                    / stats.total_bytes as f64)
-                                    * 100.0;
+                                let pct =
+                                    (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0;
                                 format!("{:.1}%", pct)
                             } else {
                                 "0%".to_string()
                             };
-                            let (peers, down, up) =
-                                if let Some(live) = &stats.live {
-                                    (
-                                        live.snapshot.peer_stats.live.to_string(),
-                                        format_speed(live.download_speed.mbps),
-                                        format_speed(live.upload_speed.mbps),
-                                    )
-                                } else {
-                                    ("N/A".to_string(), "N/A".to_string(), "N/A".to_string())
-                                };
+                            let (peers, down, up) = if let Some(live) = &stats.live {
+                                (
+                                    live.snapshot.peer_stats.live.to_string(),
+                                    format_speed(live.download_speed.mbps),
+                                    format_speed(live.upload_speed.mbps),
+                                )
+                            } else {
+                                (
+                                    "N/A".to_string(),
+                                    "N/A".to_string(),
+                                    "N/A".to_string(),
+                                )
+                            };
                             (st, prog, peers, down, up)
                         } else {
                             (
@@ -116,61 +117,45 @@ impl MainPanel {
         .detach();
     }
 
-    fn selected_torrent_ids(&self, cx: &mut Context<Self>) -> Vec<usize> {
+    /// Get the selected torrent's ID (single-row selection).
+    fn selected_torrent_id(&self, cx: &mut Context<Self>) -> Option<usize> {
         let table = self.table_state.read(cx);
-        let selected: Vec<usize> = table
-            .selected_rows()
-            .map(|r| table.delegate().rows.get(r).map(|row| row.id).unwrap_or(0))
-            .collect();
-        selected
+        table.selected_row().and_then(|r| {
+            table.delegate().rows.get(r).map(|row| row.id)
+        })
     }
 
     fn on_pause(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected_torrent_ids(cx);
-        if selected.is_empty() {
-            return;
-        }
-        let api = self.state.api();
-        for id in selected {
-            let api = api.clone();
+        if let Some(id) = self.selected_torrent_id(cx) {
+            let api = self.state.api();
             cx.spawn(async move |_, _| {
                 let _ = api.api_torrent_action_pause(id.into()).await;
             })
             .detach();
+            self.fetch_torrents(cx);
         }
-        self.fetch_torrents(cx);
     }
 
     fn on_start(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected_torrent_ids(cx);
-        if selected.is_empty() {
-            return;
-        }
-        let api = self.state.api();
-        for id in selected {
-            let api = api.clone();
+        if let Some(id) = self.selected_torrent_id(cx) {
+            let api = self.state.api();
             cx.spawn(async move |_, _| {
                 let _ = api.api_torrent_action_start(id.into()).await;
             })
             .detach();
+            self.fetch_torrents(cx);
         }
-        self.fetch_torrents(cx);
     }
 
     fn on_delete(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected_torrent_ids(cx);
-        if selected.is_empty() {
-            return;
-        }
-        let api = self.state.api();
-        for id in selected {
-            let api = api.clone();
+        if let Some(id) = self.selected_torrent_id(cx) {
+            let api = self.state.api();
             cx.spawn(async move |_, _| {
                 let _ = api.api_torrent_action_delete(id.into()).await;
             })
             .detach();
+            self.fetch_torrents(cx);
         }
-        self.fetch_torrents(cx);
     }
 
     fn on_refresh(&mut self, cx: &mut Context<Self>) {

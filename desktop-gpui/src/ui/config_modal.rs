@@ -4,9 +4,9 @@ use gpui_component::{
     checkbox::Checkbox,
     form::{field, v_form},
     input::{Input, InputState},
-    ActiveTheme as _, StyledExt as _, h_flex, v_flex,
+    h_flex, v_flex,
 };
-use std::sync::Arc;
+use std::{num::NonZeroU32, sync::Arc};
 
 use crate::{
     config::{RqbitDesktopConfig, write_config},
@@ -42,60 +42,56 @@ impl ConfigModal {
         let focus_handle = cx.focus_handle();
 
         // Create input states with initial values from config
-        let download_dir_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(config.default_download_location.to_string_lossy().to_string(), cx)
+        let download_dir_input = cx.new(|_cx| {
+            InputState::new(window, _cx)
+                .default_value(config.default_download_location.to_string_lossy().to_string())
         });
-        let dht_persistence_filename_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(config.dht.persistence_filename.to_string_lossy().to_string(), cx)
+        let dht_persistence_filename_input = cx.new(|_cx| {
+            InputState::new(window, _cx)
+                .default_value(config.dht.persistence_filename.to_string_lossy().to_string())
         });
-        let persistence_folder_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(config.persistence.folder.to_string_lossy().to_string(), cx)
+        let persistence_folder_input = cx.new(|_cx| {
+            InputState::new(window, _cx)
+                .default_value(config.persistence.folder.to_string_lossy().to_string())
         });
-        let socks_proxy_input = cx.new(|cx| {
-            InputState::new(window, cx).set_value(config.connections.socks_proxy.clone(), cx)
+        let socks_proxy_input = cx.new(|_cx| {
+            InputState::new(window, _cx).default_value(config.connections.socks_proxy.clone())
         });
-        let listen_port_input = cx.new(|cx| {
-            InputState::new(window, cx).set_value(config.connections.listen_port.to_string(), cx)
+        let listen_port_input = cx.new(|_cx| {
+            InputState::new(window, _cx).default_value(config.connections.listen_port.to_string())
         });
-        let peer_connect_timeout_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(config.connections.peer_connect_timeout.as_secs().to_string(), cx)
+        let peer_connect_timeout_input = cx.new(|_cx| {
+            InputState::new(window, _cx)
+                .default_value(config.connections.peer_connect_timeout.as_secs().to_string())
         });
-        let peer_read_write_timeout_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(config.connections.peer_read_write_timeout.as_secs().to_string(), cx)
+        let peer_read_write_timeout_input = cx.new(|_cx| {
+            InputState::new(window, _cx)
+                .default_value(config.connections.peer_read_write_timeout.as_secs().to_string())
         });
-        let http_api_listen_addr_input = cx.new(|cx| {
-            InputState::new(window, cx).set_value(config.http_api.listen_addr.to_string(), cx)
+        let http_api_listen_addr_input = cx.new(|_cx| {
+            InputState::new(window, _cx).default_value(config.http_api.listen_addr.to_string())
         });
-        let upnp_friendly_name_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(config.upnp.server_friendly_name.clone().unwrap_or_default(), cx)
+        let upnp_friendly_name_input = cx.new(|_cx| {
+            InputState::new(window, _cx)
+                .default_value(config.upnp.server_friendly_name.clone().unwrap_or_default())
         });
-        let ratelimit_download_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(
-                    config
-                        .ratelimits
-                        .download_bps
-                        .map(|v| v.to_string())
-                        .unwrap_or_default(),
-                    cx,
-                )
+        let ratelimit_download_input = cx.new(|_cx| {
+            InputState::new(window, _cx).default_value(
+                config
+                    .ratelimits
+                    .download_bps
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            )
         });
-        let ratelimit_upload_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .set_value(
-                    config
-                        .ratelimits
-                        .upload_bps
-                        .map(|v| v.to_string())
-                        .unwrap_or_default(),
-                    cx,
-                )
+        let ratelimit_upload_input = cx.new(|_cx| {
+            InputState::new(window, _cx).default_value(
+                config
+                    .ratelimits
+                    .upload_bps
+                    .map(|v| v.to_string())
+                    .unwrap_or_default(),
+            )
         });
 
         Self {
@@ -154,10 +150,18 @@ impl ConfigModal {
         };
 
         let dl = self.ratelimit_download_input.read(cx).value();
-        self.config.ratelimits.download_bps = dl.parse::<u64>().ok().filter(|&v| v > 0);
+        self.config.ratelimits.download_bps = dl
+            .parse::<u32>()
+            .ok()
+            .filter(|&v| v > 0)
+            .and_then(NonZeroU32::new);
 
         let ul = self.ratelimit_upload_input.read(cx).value();
-        self.config.ratelimits.upload_bps = ul.parse::<u64>().ok().filter(|&v| v > 0);
+        self.config.ratelimits.upload_bps = ul
+            .parse::<u32>()
+            .ok()
+            .filter(|&v| v > 0)
+            .and_then(NonZeroU32::new);
     }
 
     fn save_config(&mut self, cx: &mut Context<Self>) {
@@ -183,8 +187,6 @@ impl ConfigModal {
 
 impl Render for ConfigModal {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-
         v_flex()
             .size_full()
             .p_4()
@@ -391,10 +393,7 @@ impl Render for ConfigModal {
                     .gap_2()
                     .child(
                         Button::new("cancel")
-                            .label("Cancel")
-                            .on_click(cx.listener(|_, _, _, cx| {
-                                cx.dismiss();
-                            })),
+                            .label("Cancel"),
                     )
                     .child(
                         Button::new("save")
@@ -402,7 +401,6 @@ impl Render for ConfigModal {
                             .label("Save")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.save_config(cx);
-                                cx.dismiss();
                             })),
                     ),
             )
