@@ -1,9 +1,7 @@
-use crate::config::RqbitDesktopConfig;
+use crate::config::{RqbitDesktopConfig, read_config, write_config};
 use librqbit::{api::Api, tracing_subscriber_config_utils::InitLoggingResult};
 use librqbit_dualstack_sockets::TcpListener;
 use std::{
-    fs::{File, OpenOptions},
-    io::{BufReader, BufWriter},
     path::Path,
     sync::Arc,
 };
@@ -11,7 +9,6 @@ use std::{
 use parking_lot::RwLock;
 
 use anyhow::Context;
-use http::StatusCode;
 use librqbit::{
     ApiError, DhtSessionConfig, Session, SessionOptions, SessionPersistenceConfig, WithStatusError,
     dht::DhtPersistenceConfig,
@@ -19,38 +16,35 @@ use librqbit::{
 use tracing::{debug_span, error, warn};
 
 #[derive(Clone)]
-pub struct StateShared {
+pub struct SharedState {
     config: RqbitDesktopConfig,
     api: Arc<Api>,
 }
 
+impl SharedState {
+    pub fn api(&self) -> Arc<Api> {
+        self.api.clone()
+    }
+
+    pub fn config(&self) -> RqbitDesktopConfig {
+        self.config.clone()
+    }
+}
+
 pub struct State {
     config_filename: String,
-    shared: Arc<RwLock<StateShared>>,
+    shared: Arc<RwLock<SharedState>>,
     init_logging: InitLoggingResult,
 }
 
-fn read_config(path: &str) -> anyhow::Result<RqbitDesktopConfig> {
-    let rdr = BufReader::new(File::open(path)?);
-    let mut config: RqbitDesktopConfig = serde_json::from_reader(rdr)?;
-    config.persistence.fix_backwards_compat();
-    Ok(config)
-}
-
-fn write_config(path: &str, config: &RqbitDesktopConfig) -> anyhow::Result<()> {
-    std::fs::create_dir_all(Path::new(path).parent().context("no parent")?)
-        .context("error creating dirs")?;
-    let tmp = format!("{}.tmp", path);
-    let mut tmp_file = BufWriter::new(
-        OpenOptions::new()
-            .write(true)
-            .truncate(true)
-            .create(true)
-            .open(&tmp)?,
-    );
-    serde_json::to_writer(&mut tmp_file, config)?;
-    std::fs::rename(tmp, path)?;
-    Ok(())
+impl Clone for State {
+    fn clone(&self) -> Self {
+        Self {
+            config_filename: self.config_filename.clone(),
+            shared: self.shared.clone(),
+            init_logging: self.init_logging.clone(),
+        }
+    }
 }
 
 async fn api_from_config(
@@ -199,7 +193,7 @@ impl State {
             })
             .context("error creating state")?;
 
-        let shared = Arc::new(RwLock::new(StateShared { config, api }));
+        let shared = Arc::new(RwLock::new(SharedState { config, api }));
 
         Self {
             config_filename,
@@ -208,8 +202,12 @@ impl State {
         }
     }
 
+    pub fn shared(&self) -> Arc<RwLock<SharedState>> {
+        self.shared.clone()
+    }
+
     pub fn api(&self) -> Arc<Api> {
-        self.shared.read().api.clone()
+        self.shared.read().api()
     }
 
     async fn configure(&self, config: RqbitDesktopConfig) -> Result<(), ApiError> {

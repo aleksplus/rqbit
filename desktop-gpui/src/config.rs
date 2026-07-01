@@ -4,12 +4,41 @@ use std::{
     time::Duration,
 };
 
+use anyhow::Context;
 use librqbit::{
     ConnectionOptions, ListenerMode, ListenerOptions, PeerConnectionOptions, dht::PersistentDht,
     limits::LimitsConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
+
+// Config read/write functions
+pub fn read_config(path: &str) -> anyhow::Result<RqbitDesktopConfig> {
+    use std::fs::File;
+    use std::io::BufReader;
+    let rdr = BufReader::new(File::open(path)?);
+    let mut config: RqbitDesktopConfig = serde_json::from_reader(rdr)?;
+    config.persistence.fix_backwards_compat();
+    Ok(config)
+}
+
+pub fn write_config(path: &str, config: &RqbitDesktopConfig) -> anyhow::Result<()> {
+    use std::fs;
+    use std::io::BufWriter;
+    fs::create_dir_all(Path::new(path).parent().context("no parent")?)
+        .context("error creating dirs")?;
+    let tmp = format!("{}.tmp", path);
+    let mut tmp_file = BufWriter::new(
+        fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&tmp)?,
+    );
+    serde_json::to_writer(&mut tmp_file, config)?;
+    fs::rename(tmp, path)?;
+    Ok(())
+}
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]

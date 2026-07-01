@@ -1,86 +1,184 @@
-use gpui::{Context, Div, IntoElement, Render, SharedString, div, prelude::*};
-use gpui_component::{Button, Checkbox, Form, InputField, Modal};
-use librqbit::config::RqbitDesktopConfig;
-use std::sync::{Arc, Mutex};
+use gpui::*;
+use gpui_component::{
+    form::{Checkbox, Form, InputField},
+    ActiveTheme as _, Button, Modal, StyledExt as _, v_flex,
+};
+use std::sync::Arc;
 
-/// Props for the configuration modal.
-pub struct ConfigModalProps {
-    pub show: bool,
-    /// Callback invoked when the user confirms changes.
-    pub on_save: Arc<dyn Fn(RqbitDesktopConfig) + Send + Sync>,
-    /// Current configuration.
-    pub config: RqbitDesktopConfig,
-}
+use crate::{
+    config::{read_config, write_config, RqbitDesktopConfig},
+    state::{State, SharedState},
+};
 
-/// The modal component.
+/// Configuration modal for editing rqbit settings
 pub struct ConfigModal {
-    props: ConfigModalProps,
-    local_config: Mutex<RqbitDesktopConfig>,
+    state: Arc<State>,
+    config: RqbitDesktopConfig,
+    focus_handle: FocusHandle,
 }
 
 impl ConfigModal {
-    pub fn new(props: ConfigModalProps) -> Self {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, state: Arc<State>) -> Self {
+        let config = state.shared.read().config();
+        let focus_handle = cx.focus_handle();
+
         Self {
-            props,
-            local_config: Mutex::new(props.config.clone()),
+            state,
+            config,
+            focus_handle,
         }
     }
 
-    fn update_field<F>(&self, cx: &mut Context<Self>, field_name: &'static str, f: F)
-    where
-        F: FnOnce(&mut RqbitDesktopConfig),
-    {
-        let mut cfg = self.local_config.lock().unwrap();
-        f(&mut cfg);
+    fn save_config(&mut self, cx: &mut Context<Self>) {
+        // Write config to disk
+        if let Err(e) = write_config(&self.state.config_filename, &self.config) {
+            eprintln!("Error writing config: {:?}", e);
+        }
+
+        // Reconfigure the session with new config
+        let state = self.state.clone();
+        let config = self.config.clone();
+        cx.spawn(async move |cx| {
+            if let Err(e) = state.configure(config).await {
+                eprintln!("Error reconfiguring session: {:?}", e);
+            }
+            // Notify that config changed
+            cx.notify();
+        })
+        .detach();
     }
 }
 
 impl Render for ConfigModal {
-    fn render(&mut self, cx: &mut Context<Self>) -> impl IntoElement {
-        if !self.props.show {
-            return div();
-        }
-
-        let on_save = self.props.on_save.clone();
-        let local_cfg_clone = { self.local_config.lock().unwrap().clone() };
-
-        // Helper closures for form fields.
-        let on_download_folder =
-            cx.new_event_handler(move |cx, e: gpui::Event<gpui::text_input::TextChanged>| {
-                let text = e.text();
-                self.update_field(cx, "default_download_location", |cfg| {
-                    cfg.default_download_location = std::path::PathBuf::from(text)
-                });
-            });
-
-        let on_disable_upload =
-            cx.new_event_handler(move |cx, _: gpui::Event<gpui::checkbox::Changed>| {
-                self.update_field(cx, "disable_upload", |cfg| {
-                    cfg.disable_upload = !cfg.disable_upload
-                });
-            });
-
-        // In a full implementation we would add handlers for all fields.
-
-        let body = Form::new()
-            .field(
-                InputField::text("Default download folder", "default_download_location")
-                    .value(&local_cfg_clone.default_download_location.to_string_lossy())
-                    .on_change(on_download_folder),
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .size_full()
+            .p_4()
+            .gap_4()
+            .child(
+                Form::new()
+                    .field(
+                        InputField::new("download_dir", "Download Directory")
+                            .placeholder("Enter download directory")
+                            .value(self.config.default_download_location.to_string_lossy())
+                            .on_change(cx.listener(|this, value: &String, cx| {
+                                this.config.default_download_location = value.into();
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("dht.disable", "Disable DHT")
+                            .checked(self.config.dht.disable)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.dht.disable = checked;
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("dht.disable_persistence", "Disable DHT Persistence")
+                            .checked(self.config.dht.disable_persistence)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.dht.disable_persistence = checked;
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("upnp.enable_server", "Enable UPnP Server")
+                            .checked(self.config.upnp.enable_server)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.upnp.enable_server = checked;
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("connections.enable_utp", "Enable uTP")
+                            .checked(self.config.connections.enable_utp)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.connections.enable_utp = checked;
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("connections.enable_upnp_port_forward", "Enable UPnP Port Forwarding")
+                            .checked(self.config.connections.enable_upnp_port_forward)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.connections.enable_upnp_port_forward = checked;
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        InputField::new("connections.listen_port", "Listen Port")
+                            .placeholder("4240")
+                            .value(self.config.connections.listen_port.to_string())
+                            .on_change(cx.listener(|this, value: &String, cx| {
+                                if let Ok(port) = value.parse::<u16>() {
+                                    this.config.connections.listen_port = port;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("http_api.disable", "Disable HTTP API")
+                            .checked(self.config.http_api.disable)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.http_api.disable = checked;
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        InputField::new("http_api.listen_addr", "HTTP API Listen Address")
+                            .placeholder("127.0.0.1:3030")
+                            .value(self.config.http_api.listen_addr.to_string())
+                            .on_change(cx.listener(|this, value: &String, cx| {
+                                if let Ok(addr) = value.parse() {
+                                    this.config.http_api.listen_addr = addr;
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("persistence.disable", "Disable Persistence")
+                            .checked(self.config.persistence.disable)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.persistence.disable = checked;
+                                cx.notify();
+                            })),
+                    )
+                    .field(
+                        Checkbox::new("persistence.fastresume", "Enable Fast Resume")
+                            .checked(self.config.persistence.fastresume)
+                            .on_change(cx.listener(|this, checked: bool, cx| {
+                                this.config.persistence.fastresume = checked;
+                                cx.notify();
+                            })),
+                    ),
             )
-            // Placeholder for disable upload; only compiled if feature present
-            .field(
-                Checkbox::new("Disable upload", "disable_upload")
-                    .checked(local_cfg_clone.disable_upload)
-                    .on_change(on_disable_upload),
-            );
+            .child(
+                h_flex()
+                    .justify_end()
+                    .gap_2()
+                    .child(
+                        Button::new("cancel")
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, cx| {
+                                cx.dismiss();
+                            })),
+                    )
+                    .child(
+                        Button::new("save")
+                            .label("Save")
+                            .primary()
+                            .on_click(cx.listener(|this, _, cx| {
+                                this.save_config(cx);
+                                cx.dismiss();
+                            })),
+                    ),
+            )
+    }
+}
 
-        Modal::new()
-            .title("Configure Rqbit desktop")
-            .body(body)
-            .footer(Button::new("Save").on_click(move |_, cx| {
-                let cfg = self.local_config.lock().unwrap().clone();
-                (on_save)(cfg);
-            }))
+impl Focusable for ConfigModal {
+    fn focus_handle(&self) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
