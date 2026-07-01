@@ -170,7 +170,7 @@ async fn api_from_config(
 }
 
 impl State {
-    pub async fn new(init_logging: InitLoggingResult) -> Self {
+    pub async fn new(init_logging: InitLoggingResult) -> anyhow::Result<Self> {
         let config_filename = directories::ProjectDirs::from("com", "rqbit", "desktop")
             .expect("directories::ProjectDirs::from")
             .config_dir()
@@ -193,13 +193,16 @@ impl State {
             })
             .context("error creating state")?;
 
-        let shared = Arc::new(RwLock::new(SharedState { config, api }));
+        let shared = Arc::new(RwLock::new(SharedState {
+            config,
+            api: Arc::new(api),
+        }));
 
-        Self {
+        Ok(Self {
             config_filename,
             shared,
             init_logging: Arc::new(init_logging),
-        }
+        })
     }
 
     pub fn shared(&self) -> Arc<RwLock<SharedState>> {

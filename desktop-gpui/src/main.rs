@@ -8,7 +8,7 @@ mod ui;
 
 mod state;
 use crate::{
-    state::{State},
+    state::State,
     ui::main_panel::MainPanel,
 };
 impl gpui::Global for State {}
@@ -34,13 +34,15 @@ async fn main() {
     };
 
     // Shared state
-    let shared_state = State::new(init_logging_result).await;
+    let shared_state = State::new(init_logging_result)
+        .await
+        .expect("failed to create state");
 
     info!("GPUI application started – state ready");
 
     // Run GPUI
     let platform = gpui_platform::application();
-    Application::with_platform(platform).run(move |cx: &mut App| {
+    platform.run(move |cx: &mut App| {
         // Store the state globally so all windows/views can access it
         cx.set_global(shared_state.clone());
 
