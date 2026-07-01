@@ -1,7 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use gpui::*;
-use gpui_component::{ActiveTheme as _, Root, StyledExt as _, h_flex, v_flex};
 use tracing::{info, warn};
 
 mod config;
@@ -9,7 +8,7 @@ mod ui;
 
 mod state;
 use crate::{
-    state::{State, SharedState},
+    state::{State},
     ui::main_panel::MainPanel,
 };
 impl gpui::Global for State {}
@@ -40,24 +39,23 @@ async fn main() {
     info!("GPUI application started – state ready");
 
     // Run GPUI
-    Application::new().run(move |cx: &mut App| {
+    let platform = gpui_platform::application();
+    Application::with_platform(platform).run(move |cx: &mut App| {
         // Store the state globally so all windows/views can access it
         cx.set_global(shared_state.clone());
 
-        gpui_platform::application().run(move |cx| {
-            gpui_component::init(cx);
+        gpui_component::init(cx);
 
-            let window_options = WindowOptions {
-                titlebar: None,
-                window_bounds: Some(WindowBounds::centered(size(px(640.), px(480.)), cx)),
-                window_decorations: Some(WindowDecorations::Client),
-                ..Default::default()
-            };
+        let window_options = WindowOptions {
+            titlebar: None,
+            window_bounds: Some(WindowBounds::centered(size(px(640.), px(480.)), cx)),
+            window_decorations: Some(WindowDecorations::Client),
+            ..Default::default()
+        };
 
-            cx.open_window(window_options, |window, cx| {
-                cx.new(|cx| MainPanel::new(window, cx))
-            })
-            .expect("Failed to open window");
-        });
+        cx.open_window(window_options, |window, cx| {
+            cx.new(|cx| MainPanel::new(window, cx))
+        })
+        .expect("Failed to open window");
     });
 }

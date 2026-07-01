@@ -34,7 +34,7 @@ impl SharedState {
 pub struct State {
     config_filename: String,
     shared: Arc<RwLock<SharedState>>,
-    init_logging: InitLoggingResult,
+    init_logging: Arc<InitLoggingResult>,
 }
 
 impl Clone for State {
@@ -170,7 +170,7 @@ async fn api_from_config(
 }
 
 impl State {
-    pub async fn new(init_logging: InitLoggingResult) -> Self {
+    pub async fn new( in crate) async fn new(init_logging: InitLoggingResult) -> Self {
         let config_filename = directories::ProjectDirs::from("com", "rqbit", "desktop")
             .expect("directories::ProjectDirs::from")
             .config_dir()
@@ -198,7 +198,7 @@ impl State {
         Self {
             config_filename,
             shared,
-            init_logging,
+            init_logging: Arc::new(init_logging),
         }
     }
 
@@ -210,7 +210,7 @@ impl State {
         self.shared.read().api()
     }
 
-    async fn configure(&self, config: RqbitDesktopConfig) -> Result<(), ApiError> {
+    pub async fn configure(&self, config: RqbitDesktopConfig) -> Result<(), ApiError> {
         {
             let g = self.shared.read();
             if g.config == config {

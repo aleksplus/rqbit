@@ -1,13 +1,14 @@
 use gpui::*;
 use gpui_component::{
-    form::{Checkbox, Form, InputField},
-    ActiveTheme as _, Button, Modal, StyledExt as _, v_flex,
+    button::Button,
+    form::{Form, FormField},
+    ActiveTheme as _, Modal, StyledExt as _, v_flex,
 };
 use std::sync::Arc;
 
 use crate::{
-    config::{read_config, write_config, RqbitDesktopConfig},
-    state::{State, SharedState},
+    config::{RqbitDesktopConfig, write_config},
+    state::{State},
 };
 
 /// Configuration modal for editing rqbit settings
@@ -19,7 +20,7 @@ pub struct ConfigModal {
 
 impl ConfigModal {
     pub fn new(window: &mut Window, cx: &mut Context<Self>, state: Arc<State>) -> Self {
-        let config = state.shared.read().config();
+        let config = state.shared().read().config();
         let focus_handle = cx.focus_handle();
 
         Self {
@@ -38,11 +39,10 @@ impl ConfigModal {
         // Reconfigure the session with new config
         let state = self.state.clone();
         let config = self.config.clone();
-        cx.spawn(async move |cx| {
+        cx.spawn(async move |_, cx| {
             if let Err(e) = state.configure(config).await {
                 eprintln!("Error reconfiguring session: {:?}", e);
             }
-            // Notify that config changed
             cx.notify();
         })
         .detach();
@@ -57,101 +57,46 @@ impl Render for ConfigModal {
             .gap_4()
             .child(
                 Form::new()
-                    .field(
-                        InputField::new("download_dir", "Download Directory")
-                            .placeholder("Enter download directory")
-                            .value(self.config.default_download_location.to_string_lossy())
-                            .on_change(cx.listener(|this, value: &String, cx| {
-                                this.config.default_download_location = value.into();
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("dht.disable", "Disable DHT")
-                            .checked(self.config.dht.disable)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.dht.disable = checked;
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("dht.disable_persistence", "Disable DHT Persistence")
-                            .checked(self.config.dht.disable_persistence)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.dht.disable_persistence = checked;
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("upnp.enable_server", "Enable UPnP Server")
-                            .checked(self.config.upnp.enable_server)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.upnp.enable_server = checked;
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("connections.enable_utp", "Enable uTP")
-                            .checked(self.config.connections.enable_utp)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.connections.enable_utp = checked;
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("connections.enable_upnp_port_forward", "Enable UPnP Port Forwarding")
-                            .checked(self.config.connections.enable_upnp_port_forward)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.connections.enable_upnp_port_forward = checked;
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        InputField::new("connections.listen_port", "Listen Port")
-                            .placeholder("4240")
-                            .value(self.config.connections.listen_port.to_string())
-                            .on_change(cx.listener(|this, value: &String, cx| {
-                                if let Ok(port) = value.parse::<u16>() {
-                                    this.config.connections.listen_port = port;
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("http_api.disable", "Disable HTTP API")
-                            .checked(self.config.http_api.disable)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.http_api.disable = checked;
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        InputField::new("http_api.listen_addr", "HTTP API Listen Address")
-                            .placeholder("127.0.0.1:3030")
-                            .value(self.config.http_api.listen_addr.to_string())
-                            .on_change(cx.listener(|this, value: &String, cx| {
-                                if let Ok(addr) = value.parse() {
-                                    this.config.http_api.listen_addr = addr;
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("persistence.disable", "Disable Persistence")
-                            .checked(self.config.persistence.disable)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.persistence.disable = checked;
-                                cx.notify();
-                            })),
-                    )
-                    .field(
-                        Checkbox::new("persistence.fastresume", "Enable Fast Resume")
-                            .checked(self.config.persistence.fastresume)
-                            .on_change(cx.listener(|this, checked: bool, cx| {
-                                this.config.persistence.fastresume = checked;
-                                cx.notify();
-                            })),
-                    ),
+                    .field(FormField::new("download_dir")
+                        .label("Download Directory")
+                        .input(
+                            gpui_component::input::TextInput::new(&mut self.config.default_download_location.to_string_lossy().to_string())
+                                .on_change(cx.listener(|this, value: String, cx| {
+                                    this.config.default_download_location = value.into();
+                                    cx.notify();
+                                }))
+                        ))
+                    .field(FormField::new("dht_disable")
+                        .label("Disable DHT")
+                        .input(
+                            gpui_component::input::Checkbox::new()
+                                .checked(self.config.dht.disable)
+                                .on_change(cx.listener(|this, checked: bool, cx| {
+                                    this.config.dht.disable = checked;
+                                    cx.notify();
+                                }))
+                        ))
+                    .field(FormField::new("upnp_enable")
+                        .label("Enable UPnP Server")
+                        .input(
+                            gpui_component::input::Checkbox::new()
+                                .checked(self.config.upnp.enable_server)
+                                .on_change(cx.listener(|this, checked: bool, cx| {
+                                    this.config.upnp.enable_server = checked;
+                                    cx.notify();
+                                }))
+                        ))
+                    .field(FormField::new("listen_port")
+                        .label("Listen Port")
+                        .input(
+                            gpui_component::input::TextInput::new(&mut self.config.connections.listen_port.to_string())
+                                .on_change(cx.listener(|this, value: String, cx| {
+                                    if let Ok(port) = value.parse::<u16>() {
+                                        this.config.connections.listen_port = port;
+                                    }
+                                    cx.notify();
+                                }))
+                        )),
             )
             .child(
                 h_flex()
@@ -178,7 +123,7 @@ impl Render for ConfigModal {
 }
 
 impl Focusable for ConfigModal {
-    fn focus_handle(&self) -> FocusHandle {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
