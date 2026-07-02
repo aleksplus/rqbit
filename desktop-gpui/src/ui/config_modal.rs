@@ -115,13 +115,13 @@ impl ConfigModal {
     /// Collect values from input states into the config struct.
     fn sync_inputs_to_config(&mut self, cx: &mut Context<Self>) {
         self.config.default_download_location =
-            self.download_dir_input.read(cx).value().into();
+            self.download_dir_input.read(cx).value().to_string().into();
 
         self.config.dht.persistence_filename =
-            self.dht_persistence_filename_input.read(cx).value().into();
+            self.dht_persistence_filename_input.read(cx).value().to_string().into();
 
         self.config.persistence.folder =
-            self.persistence_folder_input.read(cx).value().into();
+            self.persistence_folder_input.read(cx).value().to_string().into();
 
         self.config.connections.socks_proxy =
             self.socks_proxy_input.read(cx).value().to_string();
@@ -175,11 +175,12 @@ impl ConfigModal {
         // Reconfigure the session with new config
         let state = self.state.clone();
         let config = self.config.clone();
+        let entity_id = cx.entity_id();
         cx.spawn(async move |_, cx| {
             if let Err(e) = state.configure(config).await {
                 eprintln!("Error reconfiguring session: {:?}", e);
             }
-            let _ = cx.update(|cx| cx.notify());
+            cx.update(|cx| cx.notify(entity_id));
         })
         .detach();
     }
@@ -206,7 +207,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("dht_enable")
                                     .checked(!self.config.dht.disable)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.dht.disable = !*checked;
                                         cx.notify();
                                     })),
@@ -218,7 +219,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("dht_persist")
                                     .checked(!self.config.dht.disable_persistence)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.dht.disable_persistence = !*checked;
                                         cx.notify();
                                     })),
@@ -236,7 +237,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("session_persist")
                                     .checked(!self.config.persistence.disable)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.persistence.disable = !*checked;
                                         cx.notify();
                                     })),
@@ -253,7 +254,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("fastresume")
                                     .checked(self.config.persistence.fastresume)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.persistence.fastresume = *checked;
                                         cx.notify();
                                     })),
@@ -276,7 +277,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("tcp_listen")
                                     .checked(self.config.connections.enable_tcp_listen)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.connections.enable_tcp_listen = *checked;
                                         cx.notify();
                                     })),
@@ -288,7 +289,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("utp_listen")
                                     .checked(self.config.connections.enable_utp)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.connections.enable_utp = *checked;
                                         cx.notify();
                                     })),
@@ -300,7 +301,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("upnp_port_forward")
                                     .checked(self.config.connections.enable_upnp_port_forward)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.connections.enable_upnp_port_forward = *checked;
                                         cx.notify();
                                     })),
@@ -312,7 +313,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("tcp_outgoing")
                                     .checked(self.config.connections.enable_tcp_outgoing)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.connections.enable_tcp_outgoing = *checked;
                                         cx.notify();
                                     })),
@@ -345,7 +346,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("http_api_enable")
                                     .checked(!self.config.http_api.disable)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.http_api.disable = !*checked;
                                         cx.notify();
                                     })),
@@ -357,7 +358,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("http_api_readonly")
                                     .checked(self.config.http_api.read_only)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.http_api.read_only = *checked;
                                         cx.notify();
                                     })),
@@ -375,7 +376,7 @@ impl Render for ConfigModal {
                             .child(
                                 Checkbox::new("upnp_server")
                                     .checked(self.config.upnp.enable_server)
-                                    .on_click(cx.listener(|this, checked, _, cx| {
+                                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
                                         this.config.upnp.enable_server = *checked;
                                         cx.notify();
                                     })),

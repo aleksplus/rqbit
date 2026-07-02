@@ -1,8 +1,8 @@
 use gpui::*;
 use gpui_component::{
-    button::{Button, ButtonVariants},
+    button::Button,
     table::{Column, DataTable, TableDelegate, TableState},
-    ActiveTheme as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, h_flex, v_flex,
 };
 use librqbit::api::ApiTorrentListOpts;
 use std::sync::Arc;
