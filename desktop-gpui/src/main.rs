@@ -44,16 +44,30 @@ async fn main() {
         gpui_component::init(cx);
 
         let window_options = WindowOptions {
-            titlebar: None,
+            titlebar: Some(TitlebarOptions {
+                title: Some("rqbit".into()),
+                appears_transparent: true,
+                traffic_light_position: Some(point(px(13.), px(13.))),
+            }),
             window_bounds: Some(WindowBounds::centered(size(px(1000.), px(800.)), cx)),
-            window_decorations: Some(WindowDecorations::Client),
+            window_decorations: Some(WindowDecorations::Server),
+            window_min_size: Some(size(px(600.), px(400.))),
             ..Default::default()
         };
 
-        cx.open_window(window_options, |window, cx| {
-            let main_panel = cx.new(|cx| MainPanel::new(window, cx));
-            cx.new(|cx| gpui_component::Root::new(main_panel, window, cx))
+        let window = cx
+            .open_window(window_options, |window, cx| {
+                let main_panel = cx.new(|cx| MainPanel::new(window, cx));
+                cx.new(|cx| gpui_component::Root::new(main_panel, window, cx))
+            })
+            .expect("Failed to open window");
+
+        // Quit the app when the window is closed (native close button).
+        cx.on_window_closed(move |cx: &mut App, _window_id| {
+            if window.is_active(cx).unwrap_or(false) {
+                cx.quit();
+            }
         })
-        .expect("Failed to open window");
+        .detach();
     });
 }

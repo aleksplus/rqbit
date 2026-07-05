@@ -262,13 +262,14 @@ impl Render for MainPanel {
 
         v_flex()
             .size_full()
-            .gap_2()
+            .gap_0()
             .child(
-                // Toolbar
+                // Toolbar (extra left padding for macOS traffic lights)
                 h_flex()
                     .gap_2()
-                    .px_2()
-                    .py_1()
+                    .pl(px(78.))
+                    .pr_2()
+                    .py_2()
                     .bg(theme.background)
                     .border_b_1()
                     .border_color(theme.border)
