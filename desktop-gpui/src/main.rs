@@ -45,7 +45,7 @@ async fn main() {
 
         let window_options = WindowOptions {
             titlebar: None,
-            window_bounds: Some(WindowBounds::centered(size(px(1200.), px(900.)), cx)),
+            window_bounds: Some(WindowBounds::centered(size(px(1000.), px(800.)), cx)),
             window_decorations: Some(WindowDecorations::Client),
             ..Default::default()
         };

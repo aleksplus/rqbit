@@ -312,7 +312,7 @@ impl Render for MainPanel {
                     .bg(theme.muted)
                     .opacity(0.8)
                     .child(
-                        div()
+                        v_flex()
                             .absolute()
                             .top(px(20.))
                             .left(px(20.))
@@ -324,6 +324,7 @@ impl Render for MainPanel {
                             .border_color(theme.border)
                             .shadow_lg()
                             .p_4()
+                            .overflow_hidden()
                             .child(modal.clone())
                             // Prevent clicks inside the modal from closing it.
                             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),

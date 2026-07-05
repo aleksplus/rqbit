@@ -275,6 +275,7 @@ impl Render for ConfigModal {
             .child(
                 // Scrollable settings content
                 v_flex()
+                    .id("config_modal_scroll")
                     .flex_1()
                     .min_h_0()
                     .gap_4()
@@ -516,6 +517,7 @@ impl Render for ConfigModal {
             // ── Button bar ──
             .child(
                 h_flex()
+                    .flex_shrink_0()
                     .justify_between()
                     .items_center()
                     .pt_2()
