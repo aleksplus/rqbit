@@ -7,15 +7,10 @@ mod config;
 mod ui;
 
 mod state;
-use crate::{
-    state::State,
-    ui::main_panel::MainPanel,
-};
+use crate::{state::State, ui::main_panel::MainPanel};
 impl gpui::Global for State {}
 
-use librqbit::{
-    tracing_subscriber_config_utils::{InitLoggingOptions, init_logging},
-};
+use librqbit::tracing_subscriber_config_utils::{InitLoggingOptions, init_logging};
 
 #[tokio::main]
 async fn main() {
@@ -50,7 +45,7 @@ async fn main() {
 
         let window_options = WindowOptions {
             titlebar: None,
-            window_bounds: Some(WindowBounds::centered(size(px(640.), px(480.)), cx)),
+            window_bounds: Some(WindowBounds::centered(size(px(1200.), px(900.)), cx)),
             window_decorations: Some(WindowDecorations::Client),
             ..Default::default()
         };

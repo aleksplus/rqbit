@@ -1,14 +1,16 @@
 use gpui::*;
 use gpui_component::{
+    ActiveTheme as _,
     button::Button,
+    h_flex,
     table::{Column, DataTable, TableDelegate, TableState},
-    ActiveTheme as _, h_flex, v_flex,
+    v_flex,
 };
 use librqbit::api::ApiTorrentListOpts;
 use std::sync::Arc;
 
 use crate::state::State;
-use crate::ui::config_modal::ConfigModal;
+use crate::ui::config_modal::{ConfigModal, ConfigModalEvent};
 
 /// Simplified torrent row data that implements Clone.
 #[derive(Clone)]
@@ -67,8 +69,8 @@ impl MainPanel {
                         if let Some(stats) = &t.stats {
                             let st = stats.state.to_string();
                             let prog = if stats.total_bytes > 0 {
-                                let pct =
-                                    (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0;
+                                let pct = (stats.progress_bytes as f64 / stats.total_bytes as f64)
+                                    * 100.0;
                                 format!("{:.1}%", pct)
                             } else {
                                 "0%".to_string()
@@ -80,11 +82,7 @@ impl MainPanel {
                                     format_speed(live.upload_speed.mbps),
                                 )
                             } else {
-                                (
-                                    "N/A".to_string(),
-                                    "N/A".to_string(),
-                                    "N/A".to_string(),
-                                )
+                                ("N/A".to_string(), "N/A".to_string(), "N/A".to_string())
                             };
                             (st, prog, peers, down, up)
                         } else {
@@ -123,9 +121,9 @@ impl MainPanel {
     /// Get the selected torrent's ID (single-row selection).
     fn selected_torrent_id(&self, cx: &mut Context<Self>) -> Option<usize> {
         let table = self.table_state.read(cx);
-        table.selected_row().and_then(|r| {
-            table.delegate().rows.get(r).map(|row| row.id)
-        })
+        table
+            .selected_row()
+            .and_then(|r| table.delegate().rows.get(r).map(|row| row.id))
     }
 
     fn on_pause(&mut self, cx: &mut Context<Self>) {
@@ -167,6 +165,15 @@ impl MainPanel {
 
     fn on_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let modal = cx.new(|cx| ConfigModal::new(_window, cx, self.state.clone()));
+        cx.subscribe(
+            &modal,
+            |this, _entity, event: &ConfigModalEvent, cx| match event {
+                ConfigModalEvent::Applied | ConfigModalEvent::Cancelled => {
+                    this.close_settings(cx);
+                }
+            },
+        )
+        .detach();
         self.config_modal = Some(modal);
         cx.notify();
     }
@@ -286,11 +293,9 @@ impl Render for MainPanel {
                             .on_click(cx.listener(|this, _, _, cx| this.on_delete(cx))),
                     )
                     .child(
-                        Button::new("settings")
-                            .label("Settings")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_settings(window, cx)
-                            })),
+                        Button::new("settings").label("Settings").on_click(
+                            cx.listener(|this, _, window, cx| this.on_settings(window, cx)),
+                        ),
                     ),
             )
             .child(
@@ -298,6 +303,7 @@ impl Render for MainPanel {
                 DataTable::new(&self.table_state),
             )
             .children(self.config_modal.as_ref().map(|modal| {
+                let theme = cx.theme();
                 div()
                     .absolute()
                     .top_0()
@@ -308,20 +314,26 @@ impl Render for MainPanel {
                     .child(
                         div()
                             .absolute()
-                            .top(px(40.))
-                            .left(px(40.))
-                            .right(px(40.))
-                            .bottom(px(40.))
+                            .top(px(20.))
+                            .left(px(20.))
+                            .right(px(20.))
+                            .bottom(px(20.))
                             .bg(theme.background)
                             .rounded_md()
                             .border_1()
                             .border_color(theme.border)
                             .shadow_lg()
-                            .child(modal.clone()),
+                            .p_4()
+                            .child(modal.clone())
+                            // Prevent clicks inside the modal from closing it.
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
                     )
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut MainPanel, _, _, cx| {
-                        this.close_settings(cx);
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut MainPanel, _, _, cx| {
+                            this.close_settings(cx);
+                        }),
+                    )
             }))
     }
 }

@@ -1,10 +1,7 @@
 use crate::config::{RqbitDesktopConfig, read_config, write_config};
 use librqbit::{api::Api, tracing_subscriber_config_utils::InitLoggingResult};
 use librqbit_dualstack_sockets::TcpListener;
-use std::{
-    path::Path,
-    sync::Arc,
-};
+use std::{path::Path, sync::Arc};
 
 use parking_lot::RwLock;
 
