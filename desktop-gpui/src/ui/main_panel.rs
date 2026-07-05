@@ -8,6 +8,7 @@ use librqbit::api::ApiTorrentListOpts;
 use std::sync::Arc;
 
 use crate::state::State;
+use crate::ui::config_modal::ConfigModal;
 
 /// Simplified torrent row data that implements Clone.
 #[derive(Clone)]
@@ -26,6 +27,7 @@ struct TorrentRow {
 pub struct MainPanel {
     state: Arc<State>,
     table_state: Entity<TableState<TorrentTableDelegate>>,
+    config_modal: Option<Entity<ConfigModal>>,
     focus_handle: FocusHandle,
 }
 
@@ -40,6 +42,7 @@ impl MainPanel {
         let mut this = Self {
             state: Arc::new(state),
             table_state,
+            config_modal: None,
             focus_handle: cx.focus_handle(),
         };
 
@@ -161,6 +164,17 @@ impl MainPanel {
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
         self.fetch_torrents(cx);
     }
+
+    fn on_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let modal = cx.new(|cx| ConfigModal::new(_window, cx, self.state.clone()));
+        self.config_modal = Some(modal);
+        cx.notify();
+    }
+
+    fn close_settings(&mut self, cx: &mut Context<Self>) {
+        self.config_modal = None;
+        cx.notify();
+    }
 }
 
 /// Table delegate that holds torrent row data.
@@ -270,12 +284,45 @@ impl Render for MainPanel {
                         Button::new("delete")
                             .label("Delete")
                             .on_click(cx.listener(|this, _, _, cx| this.on_delete(cx))),
+                    )
+                    .child(
+                        Button::new("settings")
+                            .label("Settings")
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_settings(window, cx)
+                            })),
                     ),
             )
             .child(
                 // Torrent table
                 DataTable::new(&self.table_state),
             )
+            .children(self.config_modal.as_ref().map(|modal| {
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.muted)
+                    .opacity(0.8)
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(40.))
+                            .left(px(40.))
+                            .right(px(40.))
+                            .bottom(px(40.))
+                            .bg(theme.background)
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .child(modal.clone()),
+                    )
+                    .on_mouse_down(MouseButton::Left, cx.listener(|this: &mut MainPanel, _, _, cx| {
+                        this.close_settings(cx);
+                    }))
+            }))
     }
 }
 

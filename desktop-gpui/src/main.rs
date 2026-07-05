@@ -56,7 +56,8 @@ async fn main() {
         };
 
         cx.open_window(window_options, |window, cx| {
-            cx.new(|cx| MainPanel::new(window, cx))
+            let main_panel = cx.new(|cx| MainPanel::new(window, cx));
+            cx.new(|cx| gpui_component::Root::new(main_panel, window, cx))
         })
         .expect("Failed to open window");
     });
