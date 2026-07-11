@@ -6,8 +6,8 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     menu::PopupMenuItem,
-    resizable::{ResizableState, v_resizable, resizable_panel},
-    table::{Column, DataTable, TableDelegate, TableState},
+    resizable::{ResizableState, resizable_panel, v_resizable},
+    table::{Column, DataTable, TableDelegate, TableEvent, TableState},
     v_flex,
 };
 use librqbit::api::ApiTorrentListOpts;
@@ -39,6 +39,8 @@ pub struct MainPanel {
     resizable_state: Entity<ResizableState>,
     config_modal: Option<Entity<SettingsPage>>,
     detail_panel: Option<Entity<TorrentDetailPanel>>,
+    /// Torrent ID waiting for detail panel creation (deferred until window is available in render).
+    pending_detail_id: Option<usize>,
     magnet_dialog: Option<Entity<MagnetDialog>>,
     focus_handle: FocusHandle,
 }
@@ -52,12 +54,37 @@ impl MainPanel {
         });
         let resizable_state = cx.new(|_cx| ResizableState::default());
 
+        // Open/update detail panel when a row is selected in the table.
+        cx.subscribe(
+            &table_state,
+            |this, table, event: &TableEvent, cx| match event {
+                TableEvent::SelectRow(row_ix) => {
+                    let torrent_id = table.read(cx).delegate().rows.get(*row_ix).map(|r| r.id);
+                    if let Some(id) = torrent_id {
+                        if let Some(panel) = &this.detail_panel {
+                            // Update existing panel to show the newly selected torrent.
+                            let _ = panel.update(cx, |panel, cx| {
+                                panel.switch_torrent(id, cx);
+                            });
+                        } else {
+                            // Mark that we need to create a panel; defer to render where window is available.
+                            this.pending_detail_id = Some(id);
+                            cx.notify();
+                        }
+                    }
+                }
+                _ => {}
+            },
+        )
+        .detach();
+
         let mut this = Self {
             state: Arc::new(state),
             table_state,
             resizable_state,
             config_modal: None,
             detail_panel: None,
+            pending_detail_id: None,
             magnet_dialog: None,
             focus_handle: cx.focus_handle(),
         };
@@ -292,20 +319,23 @@ impl MainPanel {
         cx.notify();
     }
 
-    fn on_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected_torrent_ids(cx).first().copied() {
-            let state = self.state.clone();
-            let panel = cx.new(|cx| TorrentDetailPanel::new(id, window, cx, state));
-            cx.subscribe(
-                &panel,
-                |this, _entity, event: &TorrentDetailPanelEvent, cx| match event {
-                    TorrentDetailPanelEvent::Back => this.close_details(cx),
-                },
-            )
-            .detach();
-            self.detail_panel = Some(panel);
-            cx.notify();
-        }
+    fn create_detail_panel(
+        &mut self,
+        torrent_id: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.state.clone();
+        let panel = cx.new(|cx| TorrentDetailPanel::new(torrent_id, window, cx, state));
+        cx.subscribe(
+            &panel,
+            |this, _entity, event: &TorrentDetailPanelEvent, cx| match event {
+                TorrentDetailPanelEvent::Back => this.close_details(cx),
+            },
+        )
+        .detach();
+        self.detail_panel = Some(panel);
+        cx.notify();
     }
 
     fn close_details(&mut self, cx: &mut Context<Self>) {
@@ -533,6 +563,12 @@ fn format_speed(mbps: f64) -> String {
 
 impl Render for MainPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Create pending detail panel now that window is available.
+        let pending_id = self.pending_detail_id.take();
+        if let Some(id) = pending_id {
+            self.create_detail_panel(id, _window, cx);
+        }
+
         let theme = cx.theme();
 
         v_flex()
@@ -573,11 +609,6 @@ impl Render for MainPanel {
                         Button::new("delete")
                             .label("Delete")
                             .on_click(cx.listener(|this, _, _, cx| this.on_delete(cx))),
-                    )
-                    .child(
-                        Button::new("details").label("Details").on_click(
-                            cx.listener(|this, _, window, cx| this.on_details(window, cx)),
-                        ),
                     )
                     .child(
                         Button::new("settings").label("Settings").on_click(

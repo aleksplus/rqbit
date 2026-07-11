@@ -78,6 +78,19 @@ impl TorrentDetailPanel {
         this
     }
 
+    /// Switch the panel to display a different torrent, refreshing data.
+    pub fn switch_torrent(&mut self, torrent_id: usize, cx: &mut Context<Self>) {
+        if self.torrent_id == torrent_id {
+            return;
+        }
+        self.torrent_id = torrent_id;
+        self.details = None;
+        self.stats = None;
+        self.trackers.clear();
+        self.peer_stats = None;
+        self.fetch_details(cx);
+    }
+
     fn fetch_details(&mut self, cx: &mut Context<Self>) {
         let api = self.state.api();
         let torrent_id = self.torrent_id;
