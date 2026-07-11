@@ -3,6 +3,7 @@ use gpui_component::{
     ActiveTheme as _,
     button::Button,
     h_flex,
+    resizable::{ResizableState, h_resizable, resizable_panel},
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -30,6 +31,7 @@ struct TorrentRow {
 pub struct MainPanel {
     state: Arc<State>,
     table_state: Entity<TableState<TorrentTableDelegate>>,
+    resizable_state: Entity<ResizableState>,
     config_modal: Option<Entity<ConfigModal>>,
     detail_panel: Option<Entity<TorrentDetailPanel>>,
     focus_handle: FocusHandle,
@@ -42,10 +44,12 @@ impl MainPanel {
         let table_state = cx.new(|cx| {
             TableState::new(TorrentTableDelegate::new(), window, cx).row_selectable(true)
         });
+        let resizable_state = cx.new(|_cx| ResizableState::default());
 
         let mut this = Self {
             state: Arc::new(state),
             table_state,
+            resizable_state,
             config_modal: None,
             detail_panel: None,
             focus_handle: cx.focus_handle(),
@@ -183,8 +187,12 @@ impl MainPanel {
     }
 
     fn close_details(&mut self, cx: &mut Context<Self>) {
+        // Deselect the table row so the detail panel stays hidden.
+        let _ = self.table_state.update(cx, |state, cx| {
+            state.clear_selection(cx);
+            cx.notify();
+        });
         self.detail_panel = None;
-        self.fetch_torrents(cx);
         cx.notify();
     }
 
@@ -330,12 +338,22 @@ impl Render for MainPanel {
                     ),
             )
             .child(
-                // Torrent table or detail panel
-                if let Some(detail) = &self.detail_panel {
-                    div().size_full().child(detail.clone())
-                } else {
-                    div().size_full().child(DataTable::new(&self.table_state))
-                },
+                // Resizable split: torrent table (left) + detail panel (right, conditional)
+                h_resizable("main-split")
+                    .with_state(&self.resizable_state)
+                    .child(resizable_panel().child(DataTable::new(&self.table_state)))
+                    .child(
+                        resizable_panel()
+                            .visible(self.detail_panel.is_some())
+                            .size(px(400.))
+                            .size_range(px(250.)..px(800.))
+                            .child(
+                                self.detail_panel
+                                    .clone()
+                                    .map(|p| p.into_any_element())
+                                    .unwrap_or_else(|| div().into_any_element()),
+                            ),
+                    ),
             )
             .children(self.config_modal.as_ref().map(|modal| {
                 let theme = cx.theme();
