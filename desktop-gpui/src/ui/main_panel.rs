@@ -1,15 +1,18 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputState},
+    menu::PopupMenuItem,
     resizable::{ResizableState, h_resizable, resizable_panel},
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
 use librqbit::api::ApiTorrentListOpts;
 use librqbit::{AddTorrent, AddTorrentOptions};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::state::State;
@@ -120,7 +123,28 @@ impl MainPanel {
                 .collect();
 
             let _ = table_state.update(cx, |state, cx| {
+                // Preserve selected torrent IDs across refresh by matching after update.
+                let prev_selected_ids: HashSet<usize> = state
+                    .delegate()
+                    .selected_rows
+                    .iter()
+                    .filter_map(|&ix| state.delegate().rows.get(ix).map(|r| r.id))
+                    .collect();
                 state.delegate_mut().rows = rows;
+                // Re-select rows whose torrent IDs match the previous selection.
+                state.delegate_mut().selected_rows = state
+                    .delegate()
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(ix, r)| {
+                        if prev_selected_ids.contains(&r.id) {
+                            Some(ix)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 cx.notify();
             });
 
@@ -129,45 +153,68 @@ impl MainPanel {
         .detach();
     }
 
-    /// Get the selected torrent's ID (single-row selection).
-    fn selected_torrent_id(&self, cx: &mut Context<Self>) -> Option<usize> {
+    /// Get all selected torrent IDs (supports multi-row selection via shift-click).
+    fn selected_torrent_ids(&self, cx: &mut Context<Self>) -> Vec<usize> {
         let table = self.table_state.read(cx);
-        table
-            .selected_row()
-            .and_then(|r| table.delegate().rows.get(r).map(|row| row.id))
+        let delegate = table.delegate();
+        let selected = &delegate.selected_rows;
+        if selected.is_empty() {
+            // Fall back to the table's single selected_row
+            return table
+                .selected_row()
+                .and_then(|r| delegate.rows.get(r).map(|row| row.id))
+                .into_iter()
+                .collect();
+        }
+        selected
+            .iter()
+            .filter_map(|&ix| delegate.rows.get(ix).map(|row| row.id))
+            .collect()
     }
 
     fn on_pause(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected_torrent_id(cx) {
-            let api = self.state.api();
-            cx.spawn(async move |_, _| {
-                let _ = api.api_torrent_action_pause(id.into()).await;
-            })
-            .detach();
-            self.fetch_torrents(cx);
+        let ids = self.selected_torrent_ids(cx);
+        if ids.is_empty() {
+            return;
         }
+        let api = self.state.api();
+        cx.spawn(async move |_, _| {
+            for id in &ids {
+                let _ = api.api_torrent_action_pause((*id).into()).await;
+            }
+        })
+        .detach();
+        self.fetch_torrents(cx);
     }
 
     fn on_start(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected_torrent_id(cx) {
-            let api = self.state.api();
-            cx.spawn(async move |_, _| {
-                let _ = api.api_torrent_action_start(id.into()).await;
-            })
-            .detach();
-            self.fetch_torrents(cx);
+        let ids = self.selected_torrent_ids(cx);
+        if ids.is_empty() {
+            return;
         }
+        let api = self.state.api();
+        cx.spawn(async move |_, _| {
+            for id in &ids {
+                let _ = api.api_torrent_action_start((*id).into()).await;
+            }
+        })
+        .detach();
+        self.fetch_torrents(cx);
     }
 
     fn on_delete(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected_torrent_id(cx) {
-            let api = self.state.api();
-            cx.spawn(async move |_, _| {
-                let _ = api.api_torrent_action_delete(id.into()).await;
-            })
-            .detach();
-            self.fetch_torrents(cx);
+        let ids = self.selected_torrent_ids(cx);
+        if ids.is_empty() {
+            return;
         }
+        let api = self.state.api();
+        cx.spawn(async move |_, _| {
+            for id in &ids {
+                let _ = api.api_torrent_action_delete((*id).into()).await;
+            }
+        })
+        .detach();
+        self.fetch_torrents(cx);
     }
 
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
@@ -246,7 +293,7 @@ impl MainPanel {
     }
 
     fn on_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected_torrent_id(cx) {
+        if let Some(id) = self.selected_torrent_ids(cx).first().copied() {
             let state = self.state.clone();
             let panel = cx.new(|cx| TorrentDetailPanel::new(id, window, cx, state));
             cx.subscribe(
@@ -264,6 +311,7 @@ impl MainPanel {
     fn close_details(&mut self, cx: &mut Context<Self>) {
         // Deselect the table row so the detail panel stays hidden.
         let _ = self.table_state.update(cx, |state, cx| {
+            state.delegate_mut().selected_rows.clear();
             state.clear_selection(cx);
             cx.notify();
         });
@@ -294,6 +342,10 @@ impl MainPanel {
 struct TorrentTableDelegate {
     rows: Vec<TorrentRow>,
     columns: Vec<Column>,
+    /// Multi-selection state: set of selected row indices.
+    selected_rows: HashSet<usize>,
+    /// The anchor row for shift-click range selection.
+    anchor_row: Option<usize>,
 }
 
 impl TorrentTableDelegate {
@@ -309,6 +361,8 @@ impl TorrentTableDelegate {
                 Column::new("down", "Down Speed").width(100.),
                 Column::new("up", "Up Speed").width(100.),
             ],
+            selected_rows: HashSet::new(),
+            anchor_row: None,
         }
     }
 }
@@ -346,6 +400,121 @@ impl TableDelegate for TorrentTableDelegate {
             "up" => div().child(row.up_speed.clone()),
             _ => div(),
         }
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let is_selected = self.selected_rows.contains(&row_ix);
+        div()
+            .id(("torrent-row", row_ix))
+            .when(is_selected, |this| this.bg(gpui::rgb(0x2a2a3e)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |state, e: &MouseDownEvent, _, cx| {
+                    let delegate = state.delegate_mut();
+                    if e.modifiers.shift {
+                        let start = delegate.anchor_row.unwrap_or(row_ix);
+                        let (lo, hi) = if start <= row_ix {
+                            (start, row_ix)
+                        } else {
+                            (row_ix, start)
+                        };
+                        delegate.selected_rows.clear();
+                        for i in lo..=hi {
+                            delegate.selected_rows.insert(i);
+                        }
+                    } else if e.modifiers.control {
+                        if delegate.selected_rows.contains(&row_ix) {
+                            delegate.selected_rows.remove(&row_ix);
+                        } else {
+                            delegate.selected_rows.insert(row_ix);
+                        }
+                        delegate.anchor_row = Some(row_ix);
+                    } else {
+                        delegate.selected_rows.clear();
+                        delegate.selected_rows.insert(row_ix);
+                        delegate.anchor_row = Some(row_ix);
+                    }
+                    cx.notify();
+                }),
+            )
+    }
+
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: gpui_component::menu::PopupMenu,
+        _window: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> gpui_component::menu::PopupMenu {
+        let Some(row) = self.rows.get(row_ix) else {
+            return menu;
+        };
+        let torrent_id = row.id;
+        let torrent_name = row.name.clone();
+
+        // Select the right-clicked row so actions target it.
+        self.selected_rows.clear();
+        self.selected_rows.insert(row_ix);
+        self.anchor_row = Some(row_ix);
+
+        // Clone the output folder for the open-folder handler.
+        // api_torrent_details is synchronous, so we can call it here.
+        let api = _cx.global::<State>().api();
+        let output_folder = api
+            .api_torrent_details(torrent_id.into())
+            .ok()
+            .map(|d| d.output_folder)
+            .unwrap_or_default();
+
+        menu.item(
+            PopupMenuItem::new(format!("Pause: {torrent_name}")).on_click(
+                move |_, _, cx: &mut App| {
+                    let api = cx.global::<State>().api();
+                    cx.spawn(async move |_| {
+                        let _ = api.api_torrent_action_pause(torrent_id.into()).await;
+                    })
+                    .detach();
+                },
+            ),
+        )
+        .item(
+            PopupMenuItem::new(format!("Start: {torrent_name}")).on_click(
+                move |_, _, cx: &mut App| {
+                    let api = cx.global::<State>().api();
+                    cx.spawn(async move |_| {
+                        let _ = api.api_torrent_action_start(torrent_id.into()).await;
+                    })
+                    .detach();
+                },
+            ),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new("Open Folder").on_click(move |_, _, _cx: &mut App| {
+                if !output_folder.is_empty() {
+                    let _ = std::process::Command::new("open")
+                        .arg(&output_folder)
+                        .spawn();
+                }
+            }),
+        )
+        .separator()
+        .item(
+            PopupMenuItem::new(format!("Delete: {torrent_name}")).on_click(
+                move |_, _, cx: &mut App| {
+                    let api = cx.global::<State>().api();
+                    cx.spawn(async move |_| {
+                        let _ = api.api_torrent_action_delete(torrent_id.into()).await;
+                    })
+                    .detach();
+                },
+            ),
+        )
     }
 }
 
