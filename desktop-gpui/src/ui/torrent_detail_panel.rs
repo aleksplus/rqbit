@@ -7,7 +7,7 @@ use gpui_component::{
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
-use librqbit::api::TorrentDetailsResponse;
+use librqbit::{TorrentStats, api::TorrentDetailsResponse};
 use std::sync::Arc;
 
 use crate::state::State;
@@ -246,12 +246,12 @@ impl Render for TorrentDetailPanel {
                     .min_h_0()
                     .p_4()
                     .gap_4()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     // Title
                     .child(
                         div()
                             .text_size(px(20.))
-                            .font_weight(FontWeight::Semibold)
+                            .font_weight(FontWeight::SEMIBOLD)
                             .child(name),
                     )
                     // Info section
@@ -261,7 +261,7 @@ impl Render for TorrentDetailPanel {
                             .child(
                                 div()
                                     .text_size(px(14.))
-                                    .font_weight(FontWeight::Semibold)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child("General"),
                             )
                             .child(info_row("Info Hash", info_hash))
@@ -276,7 +276,7 @@ impl Render for TorrentDetailPanel {
                             .child(
                                 div()
                                     .text_size(px(14.))
-                                    .font_weight(FontWeight::Semibold)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child("Statistics"),
                             )
                             .child(info_row("Progress", progress_str))
@@ -289,14 +289,16 @@ impl Render for TorrentDetailPanel {
                             .child(info_row("ETA", eta_str)),
                     )
                     // Error (if any)
-                    .when(!error_str.is_empty(), |this| {
-                        this.child(
+                    .children(if error_str.is_empty() {
+                        None
+                    } else {
+                        Some(
                             v_flex()
                                 .gap_2()
                                 .child(
                                     div()
                                         .text_size(px(14.))
-                                        .font_weight(FontWeight::Semibold)
+                                        .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(theme.danger)
                                         .child("Error"),
                                 )
@@ -317,7 +319,7 @@ impl Render for TorrentDetailPanel {
                             .child(
                                 div()
                                     .text_size(px(14.))
-                                    .font_weight(FontWeight::Semibold)
+                                    .font_weight(FontWeight::SEMIBOLD)
                                     .child("Files"),
                             )
                             .child(

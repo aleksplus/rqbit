@@ -169,17 +169,14 @@ impl MainPanel {
     fn on_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.selected_torrent_id(cx) {
             let state = self.state.clone();
-            let panel = cx.new(|cx| {
-                let panel = TorrentDetailPanel::new(id, window, cx, state);
-                cx.subscribe(
-                    &cx.entity(),
-                    |this, _entity, event: &TorrentDetailPanelEvent, cx| match event {
-                        TorrentDetailPanelEvent::Back => this.close_details(cx),
-                    },
-                )
-                .detach();
-                panel
-            });
+            let panel = cx.new(|cx| TorrentDetailPanel::new(id, window, cx, state));
+            cx.subscribe(
+                &panel,
+                |this, _entity, event: &TorrentDetailPanelEvent, cx| match event {
+                    TorrentDetailPanelEvent::Back => this.close_details(cx),
+                },
+            )
+            .detach();
             self.detail_panel = Some(panel);
             cx.notify();
         }
