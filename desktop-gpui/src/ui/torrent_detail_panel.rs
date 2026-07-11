@@ -4,10 +4,14 @@ use gpui_component::{
     button::Button,
     h_flex,
     scroll::ScrollableElement,
+    tab::{Tab, TabBar},
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
-use librqbit::{TorrentStats, api::TorrentDetailsResponse};
+use librqbit::TorrentStats;
+use librqbit::api::{
+    PeerStatsFilter, PeerStatsFilterState, PeerStatsSnapshot, TorrentDetailsResponse,
+};
 use std::sync::Arc;
 
 use crate::state::State;
@@ -19,15 +23,28 @@ pub enum TorrentDetailPanelEvent {
     Back,
 }
 
+/// Which tab is active in the detail panel.
+#[derive(Clone, Copy, PartialEq)]
+enum DetailTab {
+    Overview,
+    Trackers,
+    Peers,
+    Files,
+}
+
 /// Panel that displays detailed information about a single torrent.
 ///
-/// Shows torrent metadata, live stats, and the file list.
+/// Uses a tabbed layout: Overview, Trackers, Peers, Files.
 pub struct TorrentDetailPanel {
     state: Arc<State>,
     torrent_id: usize,
+    active_tab: DetailTab,
     details: Option<TorrentDetailsResponse>,
     stats: Option<TorrentStats>,
+    trackers: Vec<String>,
+    peer_stats: Option<PeerStatsSnapshot>,
     file_table_state: Entity<TableState<FileTableDelegate>>,
+    peer_table_state: Entity<TableState<PeerTableDelegate>>,
     focus_handle: FocusHandle,
 }
 
@@ -42,13 +59,19 @@ impl TorrentDetailPanel {
     ) -> Self {
         let file_table_state = cx
             .new(|cx| TableState::new(FileTableDelegate::new(), window, cx).row_selectable(false));
+        let peer_table_state = cx
+            .new(|cx| TableState::new(PeerTableDelegate::new(), window, cx).row_selectable(false));
 
         let mut this = Self {
             state,
             torrent_id,
+            active_tab: DetailTab::Overview,
             details: None,
             stats: None,
+            trackers: Vec::new(),
+            peer_stats: None,
             file_table_state,
+            peer_table_state,
             focus_handle: cx.focus_handle(),
         };
         this.fetch_details(cx);
@@ -59,10 +82,26 @@ impl TorrentDetailPanel {
         let api = self.state.api();
         let torrent_id = self.torrent_id;
         let file_table_state = self.file_table_state.clone();
+        let peer_table_state = self.peer_table_state.clone();
 
         cx.spawn(async move |this, cx| {
             let details = api.api_torrent_details(torrent_id.into());
             let stats = api.api_stats_v1(torrent_id.into());
+
+            // Fetch trackers from the managed torrent handle
+            let trackers: Vec<String> = api
+                .mgr_handle(torrent_id.into())
+                .ok()
+                .map(|h| h.shared().trackers.iter().map(|t| t.to_string()).collect())
+                .unwrap_or_default();
+
+            // Fetch peer stats
+            let peer_stats = api.api_peer_stats(
+                torrent_id.into(),
+                PeerStatsFilter {
+                    state: PeerStatsFilterState::All,
+                },
+            );
 
             let _ = this.update(cx, |this, cx| {
                 if let Ok(d) = &details {
@@ -84,8 +123,30 @@ impl TorrentDetailPanel {
                         cx.notify();
                     });
                 }
+
+                if let Ok(ref ps) = peer_stats {
+                    let peer_rows: Vec<PeerRow> = ps
+                        .peers
+                        .iter()
+                        .map(|(addr, p)| PeerRow {
+                            address: addr.clone(),
+                            state: p.state.to_string(),
+                            client: p.client_name.clone().unwrap_or_default(),
+                            conn_kind: p.conn_kind.map(|k| k.to_string()).unwrap_or_default(),
+                            downloaded: p.counters.fetched_bytes,
+                            uploaded: p.counters.uploaded_bytes,
+                        })
+                        .collect();
+                    let _ = peer_table_state.update(cx, |state, cx| {
+                        state.delegate_mut().rows = peer_rows;
+                        cx.notify();
+                    });
+                }
+
                 this.details = details.ok();
                 this.stats = stats.ok();
+                this.trackers = trackers;
+                this.peer_stats = peer_stats.ok();
                 cx.notify();
             });
         })
@@ -119,12 +180,12 @@ impl TorrentDetailPanel {
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
         self.fetch_details(cx);
     }
-}
 
-impl Render for TorrentDetailPanel {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-
+    fn render_overview(
+        &self,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme().clone();
         let name = self
             .details
             .as_ref()
@@ -206,6 +267,130 @@ impl Render for TorrentDetailPanel {
             .unwrap_or_default();
 
         v_flex()
+            .gap_4()
+            .p_4()
+            .overflow_y_scrollbar()
+            .child(
+                div()
+                    .text_size(px(20.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("General"),
+                    )
+                    .child(info_row("Info Hash", info_hash))
+                    .child(info_row("Output Folder", output_folder))
+                    .child(info_row("Total Pieces", total_pieces.to_string()))
+                    .child(info_row("State", state_str)),
+            )
+            .child(
+                v_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_size(px(14.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("Statistics"),
+                    )
+                    .child(info_row("Progress", progress_str))
+                    .child(info_row("Downloaded", downloaded_str))
+                    .child(info_row("Uploaded", uploaded_str))
+                    .child(info_row("Total Size", total_str))
+                    .child(info_row("Download Speed", down_str))
+                    .child(info_row("Upload Speed", up_str))
+                    .child(info_row("Peers", peers_str))
+                    .child(info_row("ETA", eta_str)),
+            )
+            .children(if error_str.is_empty() {
+                None
+            } else {
+                Some(
+                    v_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(theme.danger)
+                                .child("Error"),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(theme.danger)
+                                .child(error_str),
+                        ),
+                )
+            })
+    }
+
+    fn render_trackers(
+        &self,
+        _theme: &gpui_component::Theme,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        if self.trackers.is_empty() {
+            return v_flex().p_4().child(
+                div()
+                    .text_color(gpui::rgb(0x888888))
+                    .child("No trackers found."),
+            );
+        }
+
+        v_flex()
+            .p_4()
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(format!("Trackers ({})", self.trackers.len())),
+            )
+            .children(self.trackers.iter().map(|t| {
+                h_flex()
+                    .gap_2()
+                    .py_1()
+                    .child(div().flex_1().child(t.clone()))
+            }))
+    }
+
+    fn render_peers(
+        &self,
+        _theme: &gpui_component::Theme,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .p_4()
+            .size_full()
+            .child(DataTable::new(&self.peer_table_state))
+    }
+
+    fn render_files(
+        &self,
+        _theme: &gpui_component::Theme,
+        _cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .p_4()
+            .size_full()
+            .child(DataTable::new(&self.file_table_state))
+    }
+}
+
+impl Render for TorrentDetailPanel {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+
+        let active_tab = self.active_tab;
+
+        v_flex()
             .size_full()
             .gap_0()
             // Toolbar
@@ -239,97 +424,38 @@ impl Render for TorrentDetailPanel {
                             .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
                     ),
             )
-            // Content
+            // Tab bar
             .child(
-                v_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .p_4()
-                    .gap_4()
-                    .overflow_y_scrollbar()
-                    // Title
-                    .child(
-                        div()
-                            .text_size(px(20.))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(name),
-                    )
-                    // Info section
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("General"),
-                            )
-                            .child(info_row("Info Hash", info_hash))
-                            .child(info_row("Output Folder", output_folder))
-                            .child(info_row("Total Pieces", total_pieces.to_string()))
-                            .child(info_row("State", state_str)),
-                    )
-                    // Stats section
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Statistics"),
-                            )
-                            .child(info_row("Progress", progress_str))
-                            .child(info_row("Downloaded", downloaded_str))
-                            .child(info_row("Uploaded", uploaded_str))
-                            .child(info_row("Total Size", total_str))
-                            .child(info_row("Download Speed", down_str))
-                            .child(info_row("Upload Speed", up_str))
-                            .child(info_row("Peers", peers_str))
-                            .child(info_row("ETA", eta_str)),
-                    )
-                    // Error (if any)
-                    .children(if error_str.is_empty() {
-                        None
-                    } else {
-                        Some(
-                            v_flex()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .text_size(px(14.))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme.danger)
-                                        .child("Error"),
-                                )
-                                .child(
-                                    div()
-                                        .text_size(px(13.))
-                                        .text_color(theme.danger)
-                                        .child(error_str),
-                                ),
-                        )
+                TabBar::new("detail-tabs")
+                    .underline()
+                    .selected_index(match active_tab {
+                        DetailTab::Overview => 0,
+                        DetailTab::Trackers => 1,
+                        DetailTab::Peers => 2,
+                        DetailTab::Files => 3,
                     })
-                    // Files section
-                    .child(
-                        v_flex()
-                            .gap_2()
-                            .min_h_0()
-                            .flex_1()
-                            .child(
-                                div()
-                                    .text_size(px(14.))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Files"),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h(px(200.))
-                                    .child(DataTable::new(&self.file_table_state)),
-                            ),
-                    ),
+                    .on_click(cx.listener(|this, index, _, cx| {
+                        this.active_tab = match index {
+                            0 => DetailTab::Overview,
+                            1 => DetailTab::Trackers,
+                            2 => DetailTab::Peers,
+                            3 => DetailTab::Files,
+                            _ => DetailTab::Overview,
+                        };
+                        cx.notify();
+                    }))
+                    .child(Tab::new().label("Overview"))
+                    .child(Tab::new().label("Trackers"))
+                    .child(Tab::new().label("Peers"))
+                    .child(Tab::new().label("Files")),
             )
+            // Tab content
+            .child(div().flex_1().min_h_0().child(match active_tab {
+                DetailTab::Overview => self.render_overview(&theme, cx).into_any_element(),
+                DetailTab::Trackers => self.render_trackers(&theme, cx).into_any_element(),
+                DetailTab::Peers => self.render_peers(&theme, cx).into_any_element(),
+                DetailTab::Files => self.render_files(&theme, cx).into_any_element(),
+            }))
     }
 }
 
@@ -338,6 +464,8 @@ impl Focusable for TorrentDetailPanel {
         self.focus_handle.clone()
     }
 }
+
+// --- File table ---
 
 /// A single row in the file table.
 #[derive(Clone)]
@@ -397,6 +525,78 @@ impl TableDelegate for FileTableDelegate {
         }
     }
 }
+
+// --- Peer table ---
+
+/// A single row in the peer table.
+#[derive(Clone)]
+struct PeerRow {
+    address: String,
+    state: String,
+    client: String,
+    conn_kind: String,
+    downloaded: u64,
+    uploaded: u64,
+}
+
+/// Table delegate for the peer list.
+struct PeerTableDelegate {
+    rows: Vec<PeerRow>,
+    columns: Vec<Column>,
+}
+
+impl PeerTableDelegate {
+    fn new() -> Self {
+        Self {
+            rows: Vec::new(),
+            columns: vec![
+                Column::new("address", "Address").width(180.),
+                Column::new("state", "State").width(80.),
+                Column::new("client", "Client").width(150.),
+                Column::new("conn", "Connection").width(80.),
+                Column::new("downloaded", "Downloaded").width(100.),
+                Column::new("uploaded", "Uploaded").width(100.),
+            ],
+        }
+    }
+}
+
+impl TableDelegate for PeerTableDelegate {
+    fn columns_count(&self, _: &App) -> usize {
+        self.columns.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.rows.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> Column {
+        self.columns[col_ix].clone()
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let row = &self.rows[row_ix];
+        let col = &self.columns[col_ix];
+
+        match col.key.as_ref() {
+            "address" => div().child(row.address.clone()),
+            "state" => div().child(row.state.clone()),
+            "client" => div().child(row.client.clone()),
+            "conn" => div().child(row.conn_kind.clone()),
+            "downloaded" => div().child(format_bytes(row.downloaded)),
+            "uploaded" => div().child(format_bytes(row.uploaded)),
+            _ => div(),
+        }
+    }
+}
+
+// --- Helpers ---
 
 /// Build a label/value info row.
 fn info_row(label: impl Into<String>, value: impl Into<String>) -> Div {
