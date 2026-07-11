@@ -11,7 +11,7 @@ use librqbit::api::ApiTorrentListOpts;
 use std::sync::Arc;
 
 use crate::state::State;
-use crate::ui::config_modal::{ConfigModal, ConfigModalEvent};
+use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
 
 /// Simplified torrent row data that implements Clone.
@@ -32,7 +32,7 @@ pub struct MainPanel {
     state: Arc<State>,
     table_state: Entity<TableState<TorrentTableDelegate>>,
     resizable_state: Entity<ResizableState>,
-    config_modal: Option<Entity<ConfigModal>>,
+    config_modal: Option<Entity<SettingsPage>>,
     detail_panel: Option<Entity<TorrentDetailPanel>>,
     focus_handle: FocusHandle,
 }
@@ -197,17 +197,15 @@ impl MainPanel {
     }
 
     fn on_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let modal = cx.new(|cx| ConfigModal::new(_window, cx, self.state.clone()));
+        let page = cx.new(|cx| SettingsPage::new(_window, cx, self.state.clone()));
         cx.subscribe(
-            &modal,
-            |this, _entity, event: &ConfigModalEvent, cx| match event {
-                ConfigModalEvent::Applied | ConfigModalEvent::Cancelled => {
-                    this.close_settings(cx);
-                }
+            &page,
+            |this, _entity, event: &SettingsPageEvent, cx| match event {
+                SettingsPageEvent::Back => this.close_settings(cx),
             },
         )
         .detach();
-        self.config_modal = Some(modal);
+        self.config_modal = Some(page);
         cx.notify();
     }
 
@@ -337,7 +335,10 @@ impl Render for MainPanel {
                         ),
                     ),
             )
-            .child(
+            .child(if let Some(settings) = &self.config_modal {
+                // Settings page replaces the main content
+                div().size_full().child(settings.clone()).into_any_element()
+            } else {
                 // Resizable split: torrent table (left) + detail panel (right, conditional)
                 h_resizable("main-split")
                     .with_state(&self.resizable_state)
@@ -353,42 +354,9 @@ impl Render for MainPanel {
                                     .map(|p| p.into_any_element())
                                     .unwrap_or_else(|| div().into_any_element()),
                             ),
-                    ),
-            )
-            .children(self.config_modal.as_ref().map(|modal| {
-                let theme = cx.theme();
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(theme.muted)
-                    .opacity(0.8)
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .top(px(20.))
-                            .left(px(20.))
-                            .right(px(20.))
-                            .bottom(px(20.))
-                            .bg(theme.background)
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
-                            .p_4()
-                            .overflow_hidden()
-                            .child(modal.clone())
-                            // Prevent clicks inside the modal from closing it.
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
                     )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut MainPanel, _, _, cx| {
-                            this.close_settings(cx);
-                        }),
-                    )
-            }))
+                    .into_any_element()
+            })
     }
 }
 
