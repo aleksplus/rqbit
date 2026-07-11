@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::state::State;
 use crate::ui::config_modal::{ConfigModal, ConfigModalEvent};
+use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
 
 /// Simplified torrent row data that implements Clone.
 #[derive(Clone)]
@@ -30,6 +31,7 @@ pub struct MainPanel {
     state: Arc<State>,
     table_state: Entity<TableState<TorrentTableDelegate>>,
     config_modal: Option<Entity<ConfigModal>>,
+    detail_panel: Option<Entity<TorrentDetailPanel>>,
     focus_handle: FocusHandle,
 }
 
@@ -45,6 +47,7 @@ impl MainPanel {
             state: Arc::new(state),
             table_state,
             config_modal: None,
+            detail_panel: None,
             focus_handle: cx.focus_handle(),
         };
 
@@ -161,6 +164,31 @@ impl MainPanel {
 
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
         self.fetch_torrents(cx);
+    }
+
+    fn on_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(id) = self.selected_torrent_id(cx) {
+            let state = self.state.clone();
+            let panel = cx.new(|cx| {
+                let panel = TorrentDetailPanel::new(id, window, cx, state);
+                cx.subscribe(
+                    &cx.entity(),
+                    |this, _entity, event: &TorrentDetailPanelEvent, cx| match event {
+                        TorrentDetailPanelEvent::Back => this.close_details(cx),
+                    },
+                )
+                .detach();
+                panel
+            });
+            self.detail_panel = Some(panel);
+            cx.notify();
+        }
+    }
+
+    fn close_details(&mut self, cx: &mut Context<Self>) {
+        self.detail_panel = None;
+        self.fetch_torrents(cx);
+        cx.notify();
     }
 
     fn on_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -294,14 +322,23 @@ impl Render for MainPanel {
                             .on_click(cx.listener(|this, _, _, cx| this.on_delete(cx))),
                     )
                     .child(
+                        Button::new("details").label("Details").on_click(
+                            cx.listener(|this, _, window, cx| this.on_details(window, cx)),
+                        ),
+                    )
+                    .child(
                         Button::new("settings").label("Settings").on_click(
                             cx.listener(|this, _, window, cx| this.on_settings(window, cx)),
                         ),
                     ),
             )
             .child(
-                // Torrent table
-                DataTable::new(&self.table_state),
+                // Torrent table or detail panel
+                if let Some(detail) = &self.detail_panel {
+                    div().size_full().child(detail.clone())
+                } else {
+                    div().size_full().child(DataTable::new(&self.table_state))
+                },
             )
             .children(self.config_modal.as_ref().map(|modal| {
                 let theme = cx.theme();
