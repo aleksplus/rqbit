@@ -6,7 +6,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputState},
     menu::PopupMenuItem,
-    resizable::{ResizableState, h_resizable, resizable_panel},
+    resizable::{ResizableState, v_resizable, resizable_panel},
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
@@ -590,7 +590,7 @@ impl Render for MainPanel {
                 div().size_full().child(settings.clone()).into_any_element()
             } else {
                 // Resizable split: torrent table (left) + detail panel (right, conditional)
-                h_resizable("main-split")
+                v_resizable("main-split")
                     .with_state(&self.resizable_state)
                     .child(resizable_panel().child(DataTable::new(&self.table_state)))
                     .child(
