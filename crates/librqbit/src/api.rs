@@ -15,10 +15,7 @@ use crate::{
         AddTorrent, AddTorrentOptions, AddTorrentResponse, ListOnlyResponse, Session, TorrentId,
     },
     session_stats::snapshot::SessionStatsSnapshot,
-    torrent_state::{
-        FileStream, ManagedTorrentHandle,
-        peer::stats::snapshot::{PeerStatsFilter, PeerStatsSnapshot},
-    },
+    torrent_state::{FileStream, ManagedTorrentHandle},
     type_aliases::BF,
 };
 
@@ -29,6 +26,9 @@ use futures::Stream;
 #[cfg(feature = "tracing-subscriber-utils")]
 use tokio_stream::wrappers::{BroadcastStream, errors::BroadcastStreamRecvError};
 
+pub use crate::torrent_state::peer::stats::snapshot::{
+    PeerCounters, PeerStats, PeerStatsFilter, PeerStatsFilterState, PeerStatsSnapshot,
+};
 pub use crate::torrent_state::stats::{LiveStats, TorrentStats};
 
 pub type Result<T> = std::result::Result<T, ApiError>;

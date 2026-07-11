@@ -181,10 +181,7 @@ impl TorrentDetailPanel {
         self.fetch_details(cx);
     }
 
-    fn render_overview(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let name = self
             .details
@@ -331,11 +328,7 @@ impl TorrentDetailPanel {
             })
     }
 
-    fn render_trackers(
-        &self,
-        _theme: &gpui_component::Theme,
-        _cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_trackers(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         if self.trackers.is_empty() {
             return v_flex().p_4().child(
                 div()
@@ -361,22 +354,14 @@ impl TorrentDetailPanel {
             }))
     }
 
-    fn render_peers(
-        &self,
-        _theme: &gpui_component::Theme,
-        _cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_peers(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .p_4()
             .size_full()
             .child(DataTable::new(&self.peer_table_state))
     }
 
-    fn render_files(
-        &self,
-        _theme: &gpui_component::Theme,
-        _cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn render_files(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .p_4()
             .size_full()
@@ -451,10 +436,10 @@ impl Render for TorrentDetailPanel {
             )
             // Tab content
             .child(div().flex_1().min_h_0().child(match active_tab {
-                DetailTab::Overview => self.render_overview(&theme, cx).into_any_element(),
-                DetailTab::Trackers => self.render_trackers(&theme, cx).into_any_element(),
-                DetailTab::Peers => self.render_peers(&theme, cx).into_any_element(),
-                DetailTab::Files => self.render_files(&theme, cx).into_any_element(),
+                DetailTab::Overview => self.render_overview(cx).into_any_element(),
+                DetailTab::Trackers => self.render_trackers(cx).into_any_element(),
+                DetailTab::Peers => self.render_peers(cx).into_any_element(),
+                DetailTab::Files => self.render_files(cx).into_any_element(),
             }))
     }
 }
