@@ -1,13 +1,15 @@
 use gpui::*;
 use gpui_component::{
     ActiveTheme as _,
-    button::Button,
+    button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputState},
     resizable::{ResizableState, h_resizable, resizable_panel},
     table::{Column, DataTable, TableDelegate, TableState},
     v_flex,
 };
 use librqbit::api::ApiTorrentListOpts;
+use librqbit::{AddTorrent, AddTorrentOptions};
 use std::sync::Arc;
 
 use crate::state::State;
@@ -34,6 +36,7 @@ pub struct MainPanel {
     resizable_state: Entity<ResizableState>,
     config_modal: Option<Entity<SettingsPage>>,
     detail_panel: Option<Entity<TorrentDetailPanel>>,
+    magnet_dialog: Option<Entity<MagnetDialog>>,
     focus_handle: FocusHandle,
 }
 
@@ -52,6 +55,7 @@ impl MainPanel {
             resizable_state,
             config_modal: None,
             detail_panel: None,
+            magnet_dialog: None,
             focus_handle: cx.focus_handle(),
         };
 
@@ -168,6 +172,77 @@ impl MainPanel {
 
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
         self.fetch_torrents(cx);
+    }
+
+    fn on_add_torrent_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let receiver = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Select .torrent files".into()),
+        });
+
+        let api = self.state.api();
+        cx.spawn(async move |this, cx| {
+            match receiver.await {
+                Ok(Ok(Some(paths))) => {
+                    for path in paths {
+                        match std::fs::read(&path) {
+                            Ok(bytes) => {
+                                let add = AddTorrent::from_bytes(bytes);
+                                if let Err(e) =
+                                    api.api_add_torrent(add, None::<AddTorrentOptions>).await
+                                {
+                                    eprintln!("Error adding torrent {:?}: {:?}", path, e);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Error reading file {:?}: {:?}", path, e);
+                            }
+                        }
+                    }
+                    let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
+                }
+                Ok(Ok(None)) => {} // user cancelled
+                Ok(Err(e)) => eprintln!("File dialog error: {:?}", e),
+                Err(e) => eprintln!("File dialog receiver error: {:?}", e),
+            }
+        })
+        .detach();
+    }
+
+    fn on_add_magnet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dialog = cx.new(|cx| MagnetDialog::new(window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &MagnetDialogEvent, cx| match event {
+                MagnetDialogEvent::Cancelled => this.close_magnet_dialog(cx),
+                MagnetDialogEvent::Submitted(magnet) => {
+                    this.close_magnet_dialog(cx);
+                    this.add_magnet(magnet.clone(), cx);
+                }
+            },
+        )
+        .detach();
+        self.magnet_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn add_magnet(&mut self, magnet: String, cx: &mut Context<Self>) {
+        let api = self.state.api();
+        cx.spawn(async move |this, cx| {
+            let add = AddTorrent::from_url(magnet);
+            if let Err(e) = api.api_add_torrent(add, None::<AddTorrentOptions>).await {
+                eprintln!("Error adding magnet: {:?}", e);
+            }
+            let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
+        })
+        .detach();
+    }
+
+    fn close_magnet_dialog(&mut self, cx: &mut Context<Self>) {
+        self.magnet_dialog = None;
+        cx.notify();
     }
 
     fn on_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -309,6 +384,12 @@ impl Render for MainPanel {
                             .label("Refresh")
                             .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
                     )
+                    .child(Button::new("add-torrent").label("Add Torrent…").on_click(
+                        cx.listener(|this, _, window, cx| this.on_add_torrent_files(window, cx)),
+                    ))
+                    .child(Button::new("add-magnet").label("Add Magnet…").on_click(
+                        cx.listener(|this, _, window, cx| this.on_add_magnet(window, cx)),
+                    ))
                     .child(
                         Button::new("pause")
                             .label("Pause")
@@ -357,10 +438,127 @@ impl Render for MainPanel {
                     )
                     .into_any_element()
             })
+            .children(self.magnet_dialog.as_ref().map(|dialog| {
+                let theme = cx.theme();
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.muted)
+                    .opacity(0.8)
+                    .child(
+                        v_flex()
+                            .absolute()
+                            .top(px(80.))
+                            .left(px(80.))
+                            .right(px(80.))
+                            .bg(theme.background)
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .p_4()
+                            .overflow_hidden()
+                            .child(dialog.clone())
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut MainPanel, _, _, cx| {
+                            this.close_magnet_dialog(cx);
+                        }),
+                    )
+            }))
     }
 }
 
 impl Focusable for MainPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+// ── Magnet Dialog ───────────────────────────────────────────────────────────
+
+/// Events emitted by [`MagnetDialog`].
+#[derive(Clone, Debug)]
+pub enum MagnetDialogEvent {
+    /// User clicked **Cancel**.
+    Cancelled,
+    /// User clicked **Add** and provided a magnet URL.
+    Submitted(String),
+}
+
+/// A small dialog for entering a magnet link URL.
+pub struct MagnetDialog {
+    input_state: Entity<InputState>,
+    focus_handle: FocusHandle,
+}
+
+impl EventEmitter<MagnetDialogEvent> for MagnetDialog {}
+
+impl MagnetDialog {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self {
+            input_state: cx
+                .new(|cx| InputState::new(window, cx).placeholder("magnet:?xt=urn:btih:...")),
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    fn on_cancel(&mut self, cx: &mut Context<Self>) {
+        cx.emit(MagnetDialogEvent::Cancelled);
+    }
+
+    fn on_submit(&mut self, cx: &mut Context<Self>) {
+        let value = self.input_state.read(cx).value().to_string();
+        if !value.trim().is_empty() {
+            cx.emit(MagnetDialogEvent::Submitted(value.trim().to_string()));
+        }
+    }
+}
+
+impl Render for MagnetDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+
+        v_flex()
+            .gap_3()
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Add Magnet Link"),
+            )
+            .child(Input::new(&self.input_state))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("magnet-cancel")
+                            .outline()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| this.on_cancel(cx))),
+                    )
+                    .child(
+                        Button::new("magnet-add")
+                            .primary()
+                            .label("Add")
+                            .on_click(cx.listener(|this, _, _, cx| this.on_submit(cx))),
+                    ),
+            )
+            .child(
+                div()
+                    .text_size(px(12.))
+                    .text_color(theme.muted_foreground)
+                    .child("Tip: paste a magnet link or a 40-char info hash."),
+            )
+    }
+}
+
+impl Focusable for MagnetDialog {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
