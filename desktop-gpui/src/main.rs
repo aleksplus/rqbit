@@ -36,7 +36,7 @@ async fn main() {
     info!("GPUI application started – state ready");
 
     // Run GPUI
-    let platform = gpui_platform::application();
+    let platform = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     platform.run(move |cx: &mut App| {
         // Store the state globally so all windows/views can access it
         cx.set_global(shared_state.clone());

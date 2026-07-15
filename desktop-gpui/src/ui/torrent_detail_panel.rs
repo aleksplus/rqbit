@@ -2,6 +2,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _,
     button::Button,
+    checkbox::Checkbox,
     h_flex,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
@@ -12,6 +13,7 @@ use librqbit::TorrentStats;
 use librqbit::api::{
     PeerStatsFilter, PeerStatsFilterState, PeerStatsSnapshot, TorrentDetailsResponse,
 };
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::state::State;
@@ -57,8 +59,11 @@ impl TorrentDetailPanel {
         cx: &mut Context<Self>,
         state: Arc<State>,
     ) -> Self {
-        let file_table_state = cx
-            .new(|cx| TableState::new(FileTableDelegate::new(), window, cx).row_selectable(false));
+        let panel_weak = cx.entity().downgrade();
+        let file_table_state = cx.new(|cx| {
+            TableState::new(FileTableDelegate::new(panel_weak.clone()), window, cx)
+                .row_selectable(false)
+        });
         let peer_table_state = cx
             .new(|cx| TableState::new(PeerTableDelegate::new(), window, cx).row_selectable(false));
 
@@ -123,7 +128,9 @@ impl TorrentDetailPanel {
                         .as_ref()
                         .map(|f| {
                             f.iter()
-                                .map(|file| FileRow {
+                                .enumerate()
+                                .map(|(idx, file)| FileRow {
+                                    file_index: idx,
                                     name: file.name.clone(),
                                     length: file.length,
                                     included: file.included,
@@ -192,6 +199,73 @@ impl TorrentDetailPanel {
 
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
         self.fetch_details(cx);
+    }
+
+    /// Toggle inclusion of a file and persist it via the API.
+    fn set_file_included(&mut self, file_index: usize, included: bool, cx: &mut Context<Self>) {
+        // Update the local row immediately for responsive UI.
+        let _ = self.file_table_state.update(cx, |state, cx| {
+            if let Some(row) = state.delegate_mut().rows.get_mut(file_index) {
+                row.included = included;
+            }
+            cx.notify();
+        });
+
+        let api = self.state.api();
+        let torrent_id = self.torrent_id;
+        let file_table_state = self.file_table_state.clone();
+
+        cx.spawn(async move |_this, cx| {
+            // Compute the new set of included file indices from the current table state.
+            let only_files: HashSet<usize> = file_table_state.read_with(cx, |state, _| {
+                state
+                    .delegate()
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.included)
+                    .map(|(idx, _)| idx)
+                    .collect::<HashSet<usize>>()
+            });
+
+            let _ = api
+                .api_torrent_action_update_only_files(torrent_id.into(), &only_files)
+                .await;
+        })
+        .detach();
+    }
+
+    /// Set inclusion state for all files and persist it via the API.
+    fn set_all_files_included(&mut self, included: bool, cx: &mut Context<Self>) {
+        // Update the local rows immediately for responsive UI.
+        let _ = self.file_table_state.update(cx, |state, cx| {
+            for row in state.delegate_mut().rows.iter_mut() {
+                row.included = included;
+            }
+            cx.notify();
+        });
+
+        let api = self.state.api();
+        let torrent_id = self.torrent_id;
+        let file_table_state = self.file_table_state.clone();
+
+        cx.spawn(async move |_this, cx| {
+            let only_files: HashSet<usize> = file_table_state.read_with(cx, |state, _| {
+                state
+                    .delegate()
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, r)| r.included)
+                    .map(|(idx, _)| idx)
+                    .collect::<HashSet<usize>>()
+            });
+
+            let _ = api
+                .api_torrent_action_update_only_files(torrent_id.into(), &only_files)
+                .await;
+        })
+        .detach();
     }
 
     fn render_overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -468,6 +542,7 @@ impl Focusable for TorrentDetailPanel {
 /// A single row in the file table.
 #[derive(Clone)]
 struct FileRow {
+    file_index: usize,
     name: String,
     length: u64,
     included: bool,
@@ -477,16 +552,22 @@ struct FileRow {
 struct FileTableDelegate {
     rows: Vec<FileRow>,
     columns: Vec<Column>,
+    /// Weak handle to the owning detail panel, used to toggle file inclusion.
+    panel: WeakEntity<TorrentDetailPanel>,
 }
 
 impl FileTableDelegate {
-    fn new() -> Self {
+    fn new(panel: WeakEntity<TorrentDetailPanel>) -> Self {
         Self {
             rows: Vec::new(),
+            panel,
             columns: vec![
+                Column::new("included", "Included")
+                    .width(35.)
+                    .text_center()
+                    .selectable(false),
                 Column::new("name", "File Name").width(300.),
                 Column::new("size", "Size").width(100.),
-                Column::new("included", "Included").width(80.),
             ],
         }
     }
@@ -505,6 +586,40 @@ impl TableDelegate for FileTableDelegate {
         self.columns[col_ix].clone()
     }
 
+    /// Render a "select all" checkbox in the header of the Included column.
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        _cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let col = &self.columns[col_ix];
+        if col.key.as_ref() != "included" {
+            return div()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(col.name.clone())
+                .into_any_element();
+        }
+
+        let all_included = !self.rows.is_empty() && self.rows.iter().all(|r| r.included);
+        let panel = self.panel.clone();
+        let new_state = !all_included;
+
+        Checkbox::new("file-included-all")
+            .checked(all_included)
+            .on_click(move |_checked, _window, cx| {
+                if let Some(panel) = panel.upgrade() {
+                    panel.update(cx, |panel, cx| {
+                        panel.set_all_files_included(new_state, cx);
+                    });
+                }
+            })
+            .into_any_element()
+    }
+
     fn render_td(
         &mut self,
         row_ix: usize,
@@ -516,10 +631,25 @@ impl TableDelegate for FileTableDelegate {
         let col = &self.columns[col_ix];
 
         match col.key.as_ref() {
-            "name" => div().child(row.name.clone()),
-            "size" => div().child(format_bytes(row.length)),
-            "included" => div().child(if row.included { "✓" } else { "—" }),
-            _ => div(),
+            "name" => div().child(row.name.clone()).into_any_element(),
+            "size" => div().child(format_bytes(row.length)).into_any_element(),
+            "included" => Checkbox::new(("file-included", row_ix))
+                .checked(row.included)
+                .on_click({
+                    let panel = self.panel.clone();
+                    let file_index = row.file_index;
+                    let new_included = !row.included;
+                    move |_checked, window, cx| {
+                        if let Some(panel) = panel.upgrade() {
+                            panel.update(cx, |panel, cx| {
+                                panel.set_file_included(file_index, new_included, cx);
+                            });
+                        }
+                        let _ = window;
+                    }
+                })
+                .into_any_element(),
+            _ => div().into_any_element(),
         }
     }
 }

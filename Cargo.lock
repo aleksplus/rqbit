@@ -2235,6 +2235,7 @@ dependencies = [
  "gethostname",
  "gpui",
  "gpui-component",
+ "gpui-component-assets",
  "gpui_platform",
  "hex 0.4.3",
  "http",
