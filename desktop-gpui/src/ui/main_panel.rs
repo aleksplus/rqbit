@@ -1,8 +1,9 @@
 use gpui::prelude::FluentBuilder as _;
-use gpui::*;
+use gpui::{WeakEntity, *};
 use gpui_component::{
     ActiveTheme as _,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
     input::{Input, InputState},
     menu::PopupMenuItem,
@@ -42,6 +43,7 @@ pub struct MainPanel {
     /// Torrent ID waiting for detail panel creation (deferred until window is available in render).
     pending_detail_id: Option<usize>,
     magnet_dialog: Option<Entity<MagnetDialog>>,
+    delete_dialog: Option<Entity<DeleteDialog>>,
     focus_handle: FocusHandle,
 }
 
@@ -49,10 +51,32 @@ impl MainPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.global::<State>().clone();
 
+        let mut this = Self {
+            state: Arc::new(state),
+            // Placeholder; replaced just below once `this` exists.
+            table_state: cx.new(|_cx| {
+                TableState::new(
+                    TorrentTableDelegate::new(WeakEntity::new_invalid()),
+                    window,
+                    _cx,
+                )
+                .row_selectable(true)
+            }),
+            resizable_state: cx.new(|_cx| ResizableState::default()),
+            config_modal: None,
+            detail_panel: None,
+            pending_detail_id: None,
+            magnet_dialog: None,
+            delete_dialog: None,
+            focus_handle: cx.focus_handle(),
+        };
+
+        // Now that `this` exists, build the real table state with a weak handle to it.
+        let weak = cx.entity().downgrade();
         let table_state = cx.new(|cx| {
-            TableState::new(TorrentTableDelegate::new(), window, cx).row_selectable(true)
+            TableState::new(TorrentTableDelegate::new(weak), window, cx).row_selectable(true)
         });
-        let resizable_state = cx.new(|_cx| ResizableState::default());
+        this.table_state = table_state.clone();
 
         // Open/update detail panel when a row is selected in the table.
         cx.subscribe(
@@ -77,17 +101,6 @@ impl MainPanel {
             },
         )
         .detach();
-
-        let mut this = Self {
-            state: Arc::new(state),
-            table_state,
-            resizable_state,
-            config_modal: None,
-            detail_panel: None,
-            pending_detail_id: None,
-            magnet_dialog: None,
-            focus_handle: cx.focus_handle(),
-        };
 
         this.fetch_torrents(cx);
         this
@@ -229,15 +242,74 @@ impl MainPanel {
         self.fetch_torrents(cx);
     }
 
-    fn on_delete(&mut self, cx: &mut Context<Self>) {
+    fn on_delete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let ids = self.selected_torrent_ids(cx);
         if ids.is_empty() {
             return;
         }
+        self.open_delete_dialog(ids, window, cx);
+    }
+
+    /// Open the delete confirmation dialog for the given torrent IDs.
+    ///
+    /// Uses a manually rendered overlay entity (same pattern as `MagnetDialog`)
+    /// so it displays reliably without depending on a global dialog layer.
+    fn open_delete_dialog(
+        &mut self,
+        ids: Vec<usize>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if ids.is_empty() {
+            return;
+        }
+        let api = self.state.api();
+        // Resolve names for display (synchronous API call).
+        let names: Vec<String> = ids
+            .iter()
+            .filter_map(|id| {
+                api.api_torrent_details((*id).into())
+                    .ok()
+                    .and_then(|d| d.name)
+                    .or_else(|| Some(format!("Torrent #{}", id)))
+            })
+            .collect();
+
+        let dialog = cx.new(|cx| DeleteDialog::new(ids.clone(), names, _window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &DeleteDialogEvent, cx| match event {
+                DeleteDialogEvent::Cancelled => this.close_delete_dialog(cx),
+                DeleteDialogEvent::Confirmed(ids, delete_files) => {
+                    this.close_delete_dialog(cx);
+                    this.confirm_delete(ids.clone(), *delete_files, cx);
+                }
+            },
+        )
+        .detach();
+        self.delete_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn close_delete_dialog(&mut self, cx: &mut Context<Self>) {
+        self.delete_dialog = None;
+        cx.notify();
+    }
+
+    /// Actually perform the delete after the dialog is confirmed.
+    ///
+    /// When `delete_files` is true the downloaded data is removed from disk
+    /// (`api_torrent_action_delete`); otherwise only the torrent entry is removed
+    /// and the files are kept (`api_torrent_action_forget`).
+    fn confirm_delete(&mut self, ids: Vec<usize>, delete_files: bool, cx: &mut Context<Self>) {
         let api = self.state.api();
         cx.spawn(async move |_, _| {
             for id in &ids {
-                let _ = api.api_torrent_action_delete((*id).into()).await;
+                if delete_files {
+                    let _ = api.api_torrent_action_delete((*id).into()).await;
+                } else {
+                    let _ = api.api_torrent_action_forget((*id).into()).await;
+                }
             }
         })
         .detach();
@@ -376,10 +448,12 @@ struct TorrentTableDelegate {
     selected_rows: HashSet<usize>,
     /// The anchor row for shift-click range selection.
     anchor_row: Option<usize>,
+    /// Weak handle to the parent [`MainPanel`] so the context menu can open dialogs.
+    main_panel: WeakEntity<MainPanel>,
 }
 
 impl TorrentTableDelegate {
-    fn new() -> Self {
+    fn new(main_panel: WeakEntity<MainPanel>) -> Self {
         Self {
             rows: Vec::new(),
             columns: vec![
@@ -393,6 +467,7 @@ impl TorrentTableDelegate {
             ],
             selected_rows: HashSet::new(),
             anchor_row: None,
+            main_panel,
         }
     }
 }
@@ -535,15 +610,16 @@ impl TableDelegate for TorrentTableDelegate {
         )
         .separator()
         .item(
-            PopupMenuItem::new(format!("Delete: {torrent_name}")).on_click(
-                move |_, _, cx: &mut App| {
-                    let api = cx.global::<State>().api();
-                    cx.spawn(async move |_| {
-                        let _ = api.api_torrent_action_delete(torrent_id.into()).await;
-                    })
-                    .detach();
-                },
-            ),
+            PopupMenuItem::new(format!("Delete: {torrent_name}")).on_click({
+                let main_panel = self.main_panel.clone();
+                move |_, window, cx: &mut App| {
+                    if let Some(main) = main_panel.upgrade() {
+                        main.update(cx, |this, cx| {
+                            this.open_delete_dialog(vec![torrent_id], window, cx);
+                        });
+                    }
+                }
+            }),
         )
     }
 }
@@ -606,9 +682,9 @@ impl Render for MainPanel {
                             .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
                     )
                     .child(
-                        Button::new("delete")
-                            .label("Delete")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_delete(cx))),
+                        Button::new("delete").label("Delete").on_click(
+                            cx.listener(|this, _, window, cx| this.on_delete(window, cx)),
+                        ),
                     )
                     .child(
                         Button::new("settings").label("Settings").on_click(
@@ -670,10 +746,166 @@ impl Render for MainPanel {
                         }),
                     )
             }))
+            .children(self.delete_dialog.as_ref().map(|dialog| {
+                let theme = cx.theme();
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.muted)
+                    .opacity(0.8)
+                    .child(
+                        v_flex()
+                            .absolute()
+                            .top(px(80.))
+                            .left(px(80.))
+                            .right(px(80.))
+                            .bg(theme.background)
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .p_4()
+                            .overflow_hidden()
+                            .child(dialog.clone())
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut MainPanel, _, _, cx| {
+                            this.close_delete_dialog(cx);
+                        }),
+                    )
+            }))
     }
 }
 
 impl Focusable for MainPanel {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+// ── Delete Dialog ──────────────────────────────────────────────────────────
+
+/// Events emitted by [`DeleteDialog`].
+#[derive(Clone, Debug)]
+pub enum DeleteDialogEvent {
+    /// User cancelled.
+    Cancelled,
+    /// User confirmed deletion with (ids, delete_files).
+    Confirmed(Vec<usize>, bool),
+}
+
+/// A modal dialog for confirming torrent deletion.
+pub struct DeleteDialog {
+    ids: Vec<usize>,
+    names: Vec<String>,
+    is_bulk: bool,
+    delete_files: bool,
+    focus_handle: FocusHandle,
+}
+
+impl EventEmitter<DeleteDialogEvent> for DeleteDialog {}
+
+impl DeleteDialog {
+    pub fn new(
+        ids: Vec<usize>,
+        names: Vec<String>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            is_bulk: ids.len() > 1,
+            ids,
+            names,
+            delete_files: false,
+            focus_handle: cx.focus_handle(),
+        }
+    }
+
+    fn on_cancel(&mut self, cx: &mut Context<Self>) {
+        cx.emit(DeleteDialogEvent::Cancelled);
+    }
+
+    fn on_confirm(&mut self, cx: &mut Context<Self>) {
+        cx.emit(DeleteDialogEvent::Confirmed(
+            self.ids.clone(),
+            self.delete_files,
+        ));
+    }
+}
+
+impl Render for DeleteDialog {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+
+        v_flex()
+            .gap_3()
+            .child(
+                div()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(if self.is_bulk {
+                        format!("Delete {} torrents", self.ids.len())
+                    } else {
+                        "Delete torrent".to_string()
+                    }),
+            )
+            .child(div().child(if self.is_bulk {
+                "Are you sure you want to delete the following torrents?"
+            } else {
+                "Are you sure you want to delete this torrent?"
+            }))
+            .child(
+                div()
+                    .rounded_md()
+                    .bg(theme.muted)
+                    .p_3()
+                    .max_h(px(200.))
+                    .overflow_y_hidden()
+                    .children(
+                        self.names
+                            .iter()
+                            .map(|name| div().text_color(theme.foreground).child(name.clone())),
+                    ),
+            )
+            .child(
+                Checkbox::new("delete-files")
+                    .checked(self.delete_files)
+                    .label("Also delete downloaded files")
+                    .on_click(
+                        cx.listener(|this: &mut DeleteDialog, checked: &bool, _, _| {
+                            this.delete_files = *checked;
+                        }),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("del-cancel")
+                            .outline()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| this.on_cancel(cx))),
+                    )
+                    .child(
+                        Button::new("del-ok")
+                            .danger()
+                            .label(if self.is_bulk {
+                                format!("Delete {} Torrents", self.ids.len())
+                            } else {
+                                "Delete Torrent".to_string()
+                            })
+                            .on_click(cx.listener(|this, _, _, cx| this.on_confirm(cx))),
+                    ),
+            )
+    }
+}
+
+impl Focusable for DeleteDialog {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
