@@ -2,7 +2,6 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _,
     button::Button,
-    checkbox::Checkbox,
     h_flex,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
@@ -17,6 +16,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::state::State;
+use crate::ui::file_table::{FileRow, FileTableDelegate, format_bytes};
 
 /// Events emitted by [`TorrentDetailPanel`] to communicate with the parent view.
 #[derive(Clone, Debug)]
@@ -61,8 +61,29 @@ impl TorrentDetailPanel {
     ) -> Self {
         let panel_weak = cx.entity().downgrade();
         let file_table_state = cx.new(|cx| {
-            TableState::new(FileTableDelegate::new(panel_weak.clone()), window, cx)
-                .row_selectable(false)
+            let mut delegate = FileTableDelegate::new();
+            delegate.set_table(cx.entity().downgrade());
+            delegate.on_toggle = Some(Arc::new({
+                let panel = panel_weak.clone();
+                move |file_index, included, cx| {
+                    if let Some(panel) = panel.upgrade() {
+                        panel.update(cx, |panel, cx| {
+                            panel.set_file_included(file_index, included, cx);
+                        });
+                    }
+                }
+            }));
+            delegate.on_toggle_all = Some(Arc::new({
+                let panel = panel_weak.clone();
+                move |included, cx| {
+                    if let Some(panel) = panel.upgrade() {
+                        panel.update(cx, |panel, cx| {
+                            panel.set_all_files_included(included, cx);
+                        });
+                    }
+                }
+            }));
+            TableState::new(delegate, window, cx).row_selectable(false)
         });
         let peer_table_state = cx
             .new(|cx| TableState::new(PeerTableDelegate::new(), window, cx).row_selectable(false));
@@ -537,123 +558,6 @@ impl Focusable for TorrentDetailPanel {
     }
 }
 
-// --- File table ---
-
-/// A single row in the file table.
-#[derive(Clone)]
-struct FileRow {
-    file_index: usize,
-    name: String,
-    length: u64,
-    included: bool,
-}
-
-/// Table delegate for the file list.
-struct FileTableDelegate {
-    rows: Vec<FileRow>,
-    columns: Vec<Column>,
-    /// Weak handle to the owning detail panel, used to toggle file inclusion.
-    panel: WeakEntity<TorrentDetailPanel>,
-}
-
-impl FileTableDelegate {
-    fn new(panel: WeakEntity<TorrentDetailPanel>) -> Self {
-        Self {
-            rows: Vec::new(),
-            panel,
-            columns: vec![
-                Column::new("included", "Included")
-                    .width(35.)
-                    .text_center()
-                    .selectable(false),
-                Column::new("name", "File Name").width(300.),
-                Column::new("size", "Size").width(100.),
-            ],
-        }
-    }
-}
-
-impl TableDelegate for FileTableDelegate {
-    fn columns_count(&self, _: &App) -> usize {
-        self.columns.len()
-    }
-
-    fn rows_count(&self, _: &App) -> usize {
-        self.rows.len()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> Column {
-        self.columns[col_ix].clone()
-    }
-
-    /// Render a "select all" checkbox in the header of the Included column.
-    fn render_th(
-        &mut self,
-        col_ix: usize,
-        _: &mut Window,
-        _cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let col = &self.columns[col_ix];
-        if col.key.as_ref() != "included" {
-            return div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(col.name.clone())
-                .into_any_element();
-        }
-
-        let all_included = !self.rows.is_empty() && self.rows.iter().all(|r| r.included);
-        let panel = self.panel.clone();
-        let new_state = !all_included;
-
-        Checkbox::new("file-included-all")
-            .checked(all_included)
-            .on_click(move |_checked, _window, cx| {
-                if let Some(panel) = panel.upgrade() {
-                    panel.update(cx, |panel, cx| {
-                        panel.set_all_files_included(new_state, cx);
-                    });
-                }
-            })
-            .into_any_element()
-    }
-
-    fn render_td(
-        &mut self,
-        row_ix: usize,
-        col_ix: usize,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
-        let row = &self.rows[row_ix];
-        let col = &self.columns[col_ix];
-
-        match col.key.as_ref() {
-            "name" => div().child(row.name.clone()).into_any_element(),
-            "size" => div().child(format_bytes(row.length)).into_any_element(),
-            "included" => Checkbox::new(("file-included", row_ix))
-                .checked(row.included)
-                .on_click({
-                    let panel = self.panel.clone();
-                    let file_index = row.file_index;
-                    let new_included = !row.included;
-                    move |_checked, window, cx| {
-                        if let Some(panel) = panel.upgrade() {
-                            panel.update(cx, |panel, cx| {
-                                panel.set_file_included(file_index, new_included, cx);
-                            });
-                        }
-                        let _ = window;
-                    }
-                })
-                .into_any_element(),
-            _ => div().into_any_element(),
-        }
-    }
-}
-
 // --- Peer table ---
 
 /// A single row in the peer table.
@@ -739,27 +643,6 @@ fn info_row(label: impl Into<String>, value: impl Into<String>) -> Div {
                 .child(label),
         )
         .child(div().flex_1().child(value))
-}
-
-/// Format a byte count in human-readable form (binary units).
-fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    const TB: f64 = GB * 1024.0;
-
-    let b = bytes as f64;
-    if b >= TB {
-        format!("{:.2} TiB", b / TB)
-    } else if b >= GB {
-        format!("{:.2} GiB", b / GB)
-    } else if b >= MB {
-        format!("{:.2} MiB", b / MB)
-    } else if b >= KB {
-        format!("{:.2} KiB", b / KB)
-    } else {
-        format!("{} B", bytes)
-    }
 }
 
 /// Format a speed (given in Mbps) in human-readable form.

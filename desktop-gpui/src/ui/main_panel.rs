@@ -11,12 +11,16 @@ use gpui_component::{
     table::{Column, DataTable, TableDelegate, TableEvent, TableState},
     v_flex,
 };
+use librqbit::AddTorrentOptions;
 use librqbit::api::ApiTorrentListOpts;
-use librqbit::{AddTorrent, AddTorrentOptions};
 use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::state::State;
+use crate::ui::add_torrent_dialog::{
+    AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry, AddTorrentSource,
+};
+use crate::ui::file_table::FileRow;
 use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
 
@@ -44,6 +48,10 @@ pub struct MainPanel {
     pending_detail_id: Option<usize>,
     magnet_dialog: Option<Entity<MagnetDialog>>,
     delete_dialog: Option<Entity<DeleteDialog>>,
+    add_dialog: Option<Entity<AddTorrentDialog>>,
+    /// Torrent entries waiting for add-dialog creation (deferred until window is
+    /// available in render, mirroring `pending_detail_id`).
+    pending_add_entries: Option<Vec<AddTorrentEntry>>,
     focus_handle: FocusHandle,
 }
 
@@ -68,6 +76,8 @@ impl MainPanel {
             pending_detail_id: None,
             magnet_dialog: None,
             delete_dialog: None,
+            add_dialog: None,
+            pending_add_entries: None,
             focus_handle: cx.focus_handle(),
         };
 
@@ -332,14 +342,16 @@ impl MainPanel {
         cx.spawn(async move |this, cx| {
             match receiver.await {
                 Ok(Ok(Some(paths))) => {
+                    let mut entries: Vec<AddTorrentEntry> = Vec::new();
                     for path in paths {
                         match std::fs::read(&path) {
                             Ok(bytes) => {
-                                let add = AddTorrent::from_bytes(bytes);
-                                if let Err(e) =
-                                    api.api_add_torrent(add, None::<AddTorrentOptions>).await
-                                {
-                                    eprintln!("Error adding torrent {:?}: {:?}", path, e);
+                                let source = AddTorrentSource::Bytes(bytes);
+                                match build_entry(&api, source).await {
+                                    Ok(entry) => entries.push(entry),
+                                    Err(e) => {
+                                        eprintln!("Error reading torrent {:?}: {:?}", path, e)
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -347,7 +359,11 @@ impl MainPanel {
                             }
                         }
                     }
-                    let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
+                    if !entries.is_empty() {
+                        let _ = this.update(cx, |this, cx| {
+                            this.open_add_dialog(entries, cx);
+                        });
+                    }
                 }
                 Ok(Ok(None)) => {} // user cancelled
                 Ok(Err(e)) => eprintln!("File dialog error: {:?}", e),
@@ -377,11 +393,15 @@ impl MainPanel {
     fn add_magnet(&mut self, magnet: String, cx: &mut Context<Self>) {
         let api = self.state.api();
         cx.spawn(async move |this, cx| {
-            let add = AddTorrent::from_url(magnet);
-            if let Err(e) = api.api_add_torrent(add, None::<AddTorrentOptions>).await {
-                eprintln!("Error adding magnet: {:?}", e);
+            let source = AddTorrentSource::Url(magnet);
+            match build_entry(&api, source).await {
+                Ok(entry) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.open_add_dialog(vec![entry], cx);
+                    });
+                }
+                Err(e) => eprintln!("Error preparing magnet: {:?}", e),
             }
-            let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
         })
         .detach();
     }
@@ -389,6 +409,62 @@ impl MainPanel {
     fn close_magnet_dialog(&mut self, cx: &mut Context<Self>) {
         self.magnet_dialog = None;
         cx.notify();
+    }
+
+    /// Defer creation of the file-selection dialog until `render`, where a
+    /// `Window` is available (mirrors `pending_detail_id`).
+    fn open_add_dialog(&mut self, entries: Vec<AddTorrentEntry>, cx: &mut Context<Self>) {
+        self.pending_add_entries = Some(entries);
+        cx.notify();
+    }
+
+    /// Actually create the add dialog from pending entries (called from render).
+    fn create_add_dialog(
+        &mut self,
+        entries: Vec<AddTorrentEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialog = cx.new(|cx| AddTorrentDialog::new(entries, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &AddTorrentDialogEvent, cx| match event {
+                AddTorrentDialogEvent::Cancelled => this.close_add_dialog(cx),
+                AddTorrentDialogEvent::AddOne(source, selection) => {
+                    this.confirm_add(source.clone(), selection.clone(), cx);
+                }
+                AddTorrentDialogEvent::Finished => this.close_add_dialog(cx),
+            },
+        )
+        .detach();
+        self.add_dialog = Some(dialog);
+        cx.notify();
+    }
+
+    fn close_add_dialog(&mut self, cx: &mut Context<Self>) {
+        self.add_dialog = None;
+        cx.notify();
+    }
+
+    /// Actually add a torrent, applying the selected file indices (if any).
+    fn confirm_add(
+        &mut self,
+        source: AddTorrentSource,
+        selection: Option<Vec<usize>>,
+        cx: &mut Context<Self>,
+    ) {
+        let api = self.state.api();
+        cx.spawn(async move |this, cx| {
+            let opts = selection.map(|only_files| AddTorrentOptions {
+                only_files: Some(only_files),
+                ..Default::default()
+            });
+            if let Err(e) = api.api_add_torrent(source.to_add(), opts).await {
+                eprintln!("Error adding torrent: {:?}", e);
+            }
+            let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
+        })
+        .detach();
     }
 
     fn create_detail_panel(
@@ -645,6 +721,12 @@ impl Render for MainPanel {
             self.create_detail_panel(id, _window, cx);
         }
 
+        // Create pending add dialog now that window is available.
+        let pending_add = self.pending_add_entries.take();
+        if let Some(entries) = pending_add {
+            self.create_add_dialog(entries, _window, cx);
+        }
+
         let theme = cx.theme();
 
         v_flex()
@@ -778,7 +860,80 @@ impl Render for MainPanel {
                         }),
                     )
             }))
+            .children(self.add_dialog.as_ref().map(|dialog| {
+                let theme = cx.theme();
+                div()
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                    .bg(theme.muted)
+                    .opacity(0.8)
+                    .child(
+                        v_flex()
+                            .absolute()
+                            .top(px(80.))
+                            .left(px(80.))
+                            .right(px(80.))
+                            .max_h(px(600.))
+                            .bg(theme.background)
+                            .rounded_md()
+                            .border_1()
+                            .border_color(theme.border)
+                            .shadow_lg()
+                            .p_4()
+                            .overflow_hidden()
+                            .child(dialog.clone())
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut MainPanel, _, _, cx| {
+                            this.close_add_dialog(cx);
+                        }),
+                    )
+            }))
     }
+}
+
+/// Build an [`AddTorrentEntry`] by resolving the torrent's file list via
+/// `list_only`. If the file list can't be resolved (e.g. a magnet that can't
+/// be fetched right now), the entry is created with no files so it will be
+/// added with all files selected.
+async fn build_entry(
+    api: &librqbit::Api,
+    source: AddTorrentSource,
+) -> anyhow::Result<AddTorrentEntry> {
+    let list_opts = AddTorrentOptions {
+        list_only: true,
+        ..Default::default()
+    };
+    let response = api
+        .api_add_torrent(source.to_add(), Some(list_opts))
+        .await?;
+    let name = response
+        .details
+        .name
+        .clone()
+        .unwrap_or_else(|| response.details.info_hash.clone());
+    let files: Vec<FileRow> = response
+        .details
+        .files
+        .unwrap_or_default()
+        .into_iter()
+        .enumerate()
+        .map(|(idx, f)| FileRow {
+            file_index: idx,
+            name: f.name,
+            length: f.length,
+            included: true,
+        })
+        .collect();
+    Ok(AddTorrentEntry {
+        source,
+        name,
+        files,
+    })
 }
 
 impl Focusable for MainPanel {
