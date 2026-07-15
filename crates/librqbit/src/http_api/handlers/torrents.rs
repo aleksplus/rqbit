@@ -2,6 +2,7 @@ use std::{net::SocketAddr, str::FromStr};
 
 use anyhow::Context;
 use axum::{
+    body::{Body, to_bytes},
     extract::{Path, Query, State},
     response::IntoResponse,
 };
@@ -35,11 +36,15 @@ pub async fn h_torrents_post(
     State(state): State<ApiState>,
     Query(params): Query<TorrentAddQueryParams>,
     Timeout(timeout): Timeout<600_000, 3_600_000>,
-    data: Bytes,
+    body: Body,
 ) -> Result<impl IntoResponse> {
     let is_url = params.is_url;
     let opts = params.into_add_torrent_options();
-    let data = data.to_vec();
+    let max_size = state.opts.max_upload_body_size.unwrap_or(10 * 1024 * 1024);
+    let data = to_bytes(body, max_size)
+        .await
+        .map_err(|_| ApiError::from((StatusCode::PAYLOAD_TOO_LARGE, "body too large")))?
+        .to_vec();
     let maybe_magnet = |data: &[u8]| -> bool {
         std::str::from_utf8(data)
             .ok()

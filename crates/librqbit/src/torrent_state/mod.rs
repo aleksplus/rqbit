@@ -7,7 +7,7 @@ pub mod utils;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::atomic::Ordering;
@@ -231,6 +231,11 @@ impl ManagedTorrent {
         &self.shared
     }
 
+    /// The resolved on-disk folder this torrent's files are written under.
+    pub fn output_folder(&self) -> &Path {
+        &self.shared.options.output_folder
+    }
+
     pub fn with_metadata<R>(
         &self,
         mut f: impl FnMut(&Arc<TorrentMetadata>) -> R,
@@ -350,6 +355,11 @@ impl ManagedTorrent {
                 }
                 ManagedTorrentState::Initializing(init) => {
                     let init = init.clone();
+                    init.clear_pause_request();
+                    if !init.try_start_check() {
+                        return Ok(());
+                    }
+
                     let t = t.clone();
                     let span = t.shared().span.clone();
                     let token = token.clone();
@@ -366,7 +376,10 @@ impl ManagedTorrent {
                                 .await
                                 .context("bug: concurrent init semaphore was closed")?;
 
-                            match init.check().await {
+                            let check_result = init.check().await;
+                            init.finish_check();
+
+                            match check_result {
                                 Ok(paused) => {
                                     let mut g = t.locked.write();
                                     if let ManagedTorrentState::Initializing(_) = &g.state {
@@ -382,6 +395,12 @@ impl ManagedTorrent {
                                     _start(&t, peer_rx, start_paused, session, Some(g), token)
                                 }
                                 Err(err) => {
+                                    if init.is_pause_requested() {
+                                        debug!("initial check paused");
+                                        t.state_change_notify.notify_waiters();
+                                        return Ok(());
+                                    }
+
                                     let result = anyhow::anyhow!("{:?}", err);
                                     t.locked.write().state = ManagedTorrentState::Error(err);
                                     t.state_change_notify.notify_waiters();
@@ -463,8 +482,12 @@ impl ManagedTorrent {
                 self.state_change_notify.notify_waiters();
                 Ok(())
             }
-            ManagedTorrentState::Initializing(_) => {
-                bail!("torrent is initializing, can't pause");
+            ManagedTorrentState::Initializing(init) => {
+                let init = init.clone();
+                g.paused = true;
+                init.request_pause();
+                self.state_change_notify.notify_waiters();
+                Ok(())
             }
             ManagedTorrentState::Paused(_) => {
                 bail!("torrent is already paused");
@@ -495,10 +518,11 @@ impl ManagedTorrent {
             live: None,
         };
 
-        self.with_state(|s| {
-            match s {
+        {
+            let g = self.locked.read();
+            match &g.state {
                 ManagedTorrentState::Initializing(i) => {
-                    resp.state = S::Initializing;
+                    resp.state = S::Initializing { paused: g.paused };
                     resp.progress_bytes = i.checked_bytes.load(Ordering::Relaxed);
                 }
                 ManagedTorrentState::Paused(p) => {
@@ -534,8 +558,9 @@ impl ManagedTorrent {
                     resp.error = Some("bug: torrent in broken \"None\" state".to_string());
                 }
             }
-            resp
-        })
+        }
+
+        resp
     }
 
     #[inline(never)]

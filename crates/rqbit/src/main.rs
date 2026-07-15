@@ -23,9 +23,10 @@ use librqbit::{
     tracing_subscriber_config_utils::{InitLoggingOptions, InitLoggingResult, init_logging},
 };
 use librqbit_dualstack_sockets::TcpListener;
+use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceInfo};
 use size_format::SizeFormatterBinary as SF;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug_span, error, info, trace_span, warn};
+use tracing::{debug, debug_span, error, info, trace_span, warn};
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum LogLevel {
@@ -101,6 +102,21 @@ struct Opts {
     /// Allow creating torrents via HTTP API
     #[arg(long = "http-api-allow-create", env = "RQBIT_HTTP_API_ALLOW_CREATE")]
     http_api_allow_create: bool,
+
+    /// Upload body size limit in bytes.
+    #[arg(
+        long = "http-api-max-upload-size",
+        env = "RQBIT_HTTP_API_MAX_UPLOAD_SIZE"
+    )]
+    http_api_max_upload_size: Option<usize>,
+
+    /// Advertise the HTTP API on the local network via mDNS/DNS-SD, so it can
+    /// be reached at http://rqbit.local:PORT from other devices on your LAN.
+    ///
+    /// Requires the HTTP API to listen on a non-loopback address, e.g.
+    /// --http-api-listen-addr 0.0.0.0:3030.
+    #[arg(long = "enable-mdns", env = "RQBIT_MDNS_ENABLE")]
+    enable_mdns: bool,
 
     /// Set this flag if you want to use tokio's single threaded runtime.
     /// It MAY perform better, but the main purpose is easier debugging, as time
@@ -362,6 +378,15 @@ struct DownloadOpts {
     /// Disable HTTP API entirely.
     #[arg(long = "disable-http-api")]
     disable_http_api: bool,
+
+    /// Forward the listen port through UPnP on your router.
+    ///
+    /// By default "rqbit download" does not port-forward, as it is an
+    /// ephemeral one-shot process. Set this to forward the port for the
+    /// duration of the download (e.g. to become connectable). Still respects
+    /// the global --disable-upnp-port-forward.
+    #[arg(long = "upnp-port-forward", env = "RQBIT_UPNP_PORT_FORWARD")]
+    upnp_port_forward: bool,
 }
 
 #[derive(Clone)]
@@ -680,6 +705,7 @@ async fn async_main(mut opts: Opts, cancel: CancellationToken) -> anyhow::Result
             None
         },
         allow_create: opts.http_api_allow_create,
+        max_upload_body_size: opts.http_api_max_upload_size,
 
         // We need to install prometheus recorder early before we registered any metrics.
         #[cfg(feature = "prometheus")]
@@ -775,8 +801,10 @@ async fn async_main(mut opts: Opts, cancel: CancellationToken) -> anyhow::Result
             }
 
             if let Some(listen) = sopts.listen.as_mut() {
-                // We are creating an ephemeral download, no point in port forwarding.
-                listen.enable_upnp_port_forwarding = false;
+                // "rqbit download" is ephemeral, so by default don't port-forward.
+                // --upnp-port-forward opts in, but the global --disable-upnp-port-forward
+                // still acts as an off-switch.
+                listen.enable_upnp_port_forwarding &= download_opts.upnp_port_forward;
             }
 
             let torrent_opts = || AddTorrentOptions {
@@ -995,6 +1023,12 @@ async fn start_http_api(
     let listen_addr = listener.bind_addr();
     info!("started HTTP API at http://{listen_addr}");
 
+    let mdns_advertisement = if opts.enable_mdns {
+        Some(advertise_http_api(listen_addr)?)
+    } else {
+        None
+    };
+
     let mut upnp_server = {
         match opts.enable_upnp_server {
             true => {
@@ -1022,6 +1056,9 @@ async fn start_http_api(
     let http_api_fut = http_api.make_http_api_and_run(listener, upnp_router);
 
     Ok(async move {
+        // Keep the mDNS advertisement (if any) alive for the server's lifetime.
+        let _mdns_advertisement = mdns_advertisement;
+
         let res = match upnp_server {
             Some(srv) => {
                 let upnp_fut = srv.run_ssdp_forever();
@@ -1040,12 +1077,111 @@ async fn start_http_api(
     })
 }
 
+/// RAII guard: dropping it shuts down the daemon, sending mDNS "goodbye" packets.
+struct MdnsAdvertisement {
+    daemon: ServiceDaemon,
+}
+
+impl Drop for MdnsAdvertisement {
+    fn drop(&mut self) {
+        if let Err(e) = self.daemon.shutdown() {
+            warn!("error shutting down mDNS daemon: {e:#}");
+        }
+    }
+}
+
+/// Advertise the HTTP API over mDNS/DNS-SD as `rqbit.local`, so the Web UI is
+/// reachable at `http://rqbit.local:<port>` from other LAN devices.
+///
+/// Keep the returned guard alive for as long as the advertisement should be
+/// published.
+fn advertise_http_api(listen_addr: SocketAddr) -> anyhow::Result<MdnsAdvertisement> {
+    // mDNS names are fully-qualified and must end with a dot.
+    const SERVICE_TYPE: &str = "_http._tcp.local.";
+    const INSTANCE_NAME: &str = "rqbit";
+    const HOSTNAME: &str = "rqbit.local.";
+
+    let ip = listen_addr.ip();
+    if ip.is_loopback() {
+        bail!(
+            "cannot enable mDNS as the HTTP API listen addr is loopback. \
+             Change --http-api-listen-addr to bind to 0.0.0.0 or ::"
+        );
+    }
+
+    // Advertise the bound address. For a wildcard bind, addr_auto instead makes
+    // the daemon publish (and keep updated) every host address.
+    let addr_auto = ip.is_unspecified();
+    let addr = if addr_auto {
+        String::new()
+    } else {
+        ip.to_string()
+    };
+    let port = listen_addr.port();
+    let properties = [("path", "/")];
+
+    let mut service_info = ServiceInfo::new(
+        SERVICE_TYPE,
+        INSTANCE_NAME,
+        HOSTNAME,
+        addr.as_str(),
+        port,
+        &properties[..],
+    )
+    .context("error building mDNS service info")?;
+    if addr_auto {
+        service_info = service_info.enable_addr_auto();
+    }
+
+    let daemon = ServiceDaemon::new().context("error creating mDNS daemon")?;
+
+    // Probing/conflict resolution runs asynchronously after register(), so log
+    // the names the daemon actually settles on as it reports them.
+    let monitor = daemon.monitor().context("error monitoring mDNS daemon")?;
+    librqbit_spawn(
+        debug_span!("mdns_monitor"),
+        "mdns_monitor",
+        mdns_monitor(monitor),
+    );
+
+    daemon
+        .register(service_info)
+        .context("error registering mDNS service")?;
+
+    info!(
+        "advertising HTTP API over mDNS on port {port} (requested hostname {})",
+        HOSTNAME.trim_end_matches('.')
+    );
+
+    Ok(MdnsAdvertisement { daemon })
+}
+
+/// Logs the hostnames the mDNS daemon settles on (including conflict renames)
+/// and any daemon errors, until it shuts down and closes the channel.
+async fn mdns_monitor(monitor: mdns_sd::Receiver<DaemonEvent>) -> anyhow::Result<()> {
+    while let Ok(event) = monitor.recv_async().await {
+        match event {
+            DaemonEvent::NameChange(c) => warn!(
+                "mDNS name {:?} is already taken on the LAN; advertising as {:?} instead",
+                c.original.trim_end_matches('.'),
+                c.new_name.trim_end_matches('.'),
+            ),
+            DaemonEvent::Error(e) => warn!("mDNS daemon error: {e:#}"),
+            DaemonEvent::Announce(fullname, host_intf) => {
+                debug!("mDNS announced {fullname} on {host_intf}")
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 async fn stats_printer(session: Arc<Session>) -> Result<(), &'static str> {
     loop {
         session.with_torrents(|torrents| {
                 for (idx, torrent) in torrents {
                     let stats = torrent.stats();
-                    if let TorrentStatsState::Initializing = stats.state {
+                    if let TorrentStatsState::Initializing { .. } = stats.state {
                         let total = stats.total_bytes;
                         let progress = stats.progress_bytes;
                         let pct =  (progress as f64 / total as f64) * 100f64;
