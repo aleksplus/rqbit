@@ -1,7 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{WeakEntity, *};
 use gpui_component::{
-    ActiveTheme as _,
+    ActiveTheme as _, StyledExt,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -13,14 +13,16 @@ use gpui_component::{
 };
 use librqbit::AddTorrentOptions;
 use librqbit::api::ApiTorrentListOpts;
+use librqbit::session_stats::snapshot::SessionStatsSnapshot;
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::state::State;
 use crate::ui::add_torrent_dialog::{
     AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry, AddTorrentSource,
 };
-use crate::ui::file_table::FileRow;
+use crate::ui::file_table::{FileRow, format_bytes};
 use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
 
@@ -52,6 +54,10 @@ pub struct MainPanel {
     /// Torrent entries waiting for add-dialog creation (deferred until window is
     /// available in render, mirroring `pending_detail_id`).
     pending_add_entries: Option<Vec<AddTorrentEntry>>,
+    /// Latest session-wide stats for the footer (download/upload speed, uptime).
+    footer_stats: Option<SessionStatsSnapshot>,
+    /// Keeps the periodic stats polling task alive for the lifetime of the panel.
+    _stats_task: Option<Task<()>>,
     focus_handle: FocusHandle,
 }
 
@@ -78,6 +84,8 @@ impl MainPanel {
             delete_dialog: None,
             add_dialog: None,
             pending_add_entries: None,
+            footer_stats: None,
+            _stats_task: None,
             focus_handle: cx.focus_handle(),
         };
 
@@ -113,7 +121,25 @@ impl MainPanel {
         .detach();
 
         this.fetch_torrents(cx);
+        this.start_stats_polling(cx);
         this
+    }
+
+    /// Periodically refresh session-wide stats so the footer shows live
+    /// download/upload speed and uptime. Runs until the panel is dropped.
+    fn start_stats_polling(&mut self, cx: &mut Context<Self>) {
+        let api = self.state.api();
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                let stats = api.api_session_stats();
+                let _ = this.update(cx, |this, cx| {
+                    this.footer_stats = Some(stats);
+                    cx.notify();
+                });
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+            }
+        });
+        self._stats_task = Some(task);
     }
 
     fn fetch_torrents(&mut self, cx: &mut Context<Self>) {
@@ -713,6 +739,23 @@ fn format_speed(mbps: f64) -> String {
     }
 }
 
+/// Format a duration in seconds as a compact human-readable uptime string.
+fn format_uptime(seconds: u64) -> String {
+    let days = seconds / 86400;
+    let hours = (seconds % 86400) / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    if days > 0 {
+        format!("{days}d {hours}h {minutes}m")
+    } else if hours > 0 {
+        format!("{hours}h {minutes}m {secs}s")
+    } else if minutes > 0 {
+        format!("{minutes}m {secs}s")
+    } else {
+        format!("{secs}s")
+    }
+}
+
 impl Render for MainPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Create pending detail panel now that window is available.
@@ -774,28 +817,33 @@ impl Render for MainPanel {
                         ),
                     ),
             )
-            .child(if let Some(settings) = &self.config_modal {
-                // Settings page replaces the main content
-                div().size_full().child(settings.clone()).into_any_element()
-            } else {
-                // Resizable split: torrent table (left) + detail panel (right, conditional)
-                v_resizable("main-split")
-                    .with_state(&self.resizable_state)
-                    .child(resizable_panel().child(DataTable::new(&self.table_state)))
-                    .child(
-                        resizable_panel()
-                            .visible(self.detail_panel.is_some())
-                            .size(px(400.))
-                            .size_range(px(250.)..px(800.))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(if let Some(settings) = &self.config_modal {
+                        // Settings page replaces the main content
+                        div().size_full().child(settings.clone()).into_any_element()
+                    } else {
+                        // Resizable split: torrent table (left) + detail panel (right, conditional)
+                        v_resizable("main-split")
+                            .with_state(&self.resizable_state)
+                            .child(resizable_panel().child(DataTable::new(&self.table_state)))
                             .child(
-                                self.detail_panel
-                                    .clone()
-                                    .map(|p| p.into_any_element())
-                                    .unwrap_or_else(|| div().into_any_element()),
-                            ),
-                    )
-                    .into_any_element()
-            })
+                                resizable_panel()
+                                    .visible(self.detail_panel.is_some())
+                                    .size(px(400.))
+                                    .size_range(px(250.)..px(800.))
+                                    .child(
+                                        self.detail_panel
+                                            .clone()
+                                            .map(|p| p.into_any_element())
+                                            .unwrap_or_else(|| div().into_any_element()),
+                                    ),
+                            )
+                            .into_any_element()
+                    }),
+            )
             .children(self.magnet_dialog.as_ref().map(|dialog| {
                 let theme = cx.theme();
                 div()
@@ -893,6 +941,71 @@ impl Render for MainPanel {
                         }),
                     )
             }))
+            .child(self.render_footer(cx))
+    }
+}
+
+impl MainPanel {
+    /// Render the footer showing session-wide download/upload speed and uptime.
+    fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+
+        let (down_speed, up_speed, fetched, uploaded, uptime) = match &self.footer_stats {
+            Some(stats) => (
+                stats.download_speed.to_string(),
+                stats.upload_speed.to_string(),
+                format_bytes(stats.counters.fetched_bytes),
+                format_bytes(stats.counters.uploaded_bytes),
+                format_uptime(stats.uptime_seconds),
+            ),
+            None => (
+                "—".to_string(),
+                "—".to_string(),
+                "—".to_string(),
+                "—".to_string(),
+                "—".to_string(),
+            ),
+        };
+
+        h_flex()
+            .flex_shrink_0()
+            .justify_between()
+            .gap_4()
+            .px_3()
+            .py_1()
+            .bg(theme.background)
+            .border_t_1()
+            .border_color(theme.border)
+            .text_sm()
+            .text_color(theme.muted_foreground)
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(div().child("↓ ").font_medium())
+                    .child(div().child(down_speed))
+                    .child(
+                        div()
+                            .child(format!("({fetched})"))
+                            .text_color(theme.muted_foreground),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(div().child("↑ ").font_medium())
+                    .child(div().child(up_speed))
+                    .child(
+                        div()
+                            .child(format!("({uploaded})"))
+                            .text_color(theme.muted_foreground),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_1()
+                    .child(div().child("up ").font_medium())
+                    .child(div().child(uptime)),
+            )
     }
 }
 
