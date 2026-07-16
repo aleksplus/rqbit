@@ -1,7 +1,7 @@
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _,
-    button::Button,
+    ActiveTheme as _, IconName, Sizable,
+    button::{Button, ButtonVariants},
     h_flex,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
@@ -196,30 +196,6 @@ impl TorrentDetailPanel {
 
     fn on_back(&mut self, cx: &mut Context<Self>) {
         cx.emit(TorrentDetailPanelEvent::Back);
-    }
-
-    fn on_pause(&mut self, cx: &mut Context<Self>) {
-        let api = self.state.api();
-        let id = self.torrent_id;
-        cx.spawn(async move |_, _| {
-            let _ = api.api_torrent_action_pause(id.into()).await;
-        })
-        .detach();
-        self.fetch_details(cx);
-    }
-
-    fn on_start(&mut self, cx: &mut Context<Self>) {
-        let api = self.state.api();
-        let id = self.torrent_id;
-        cx.spawn(async move |_, _| {
-            let _ = api.api_torrent_action_start(id.into()).await;
-        })
-        .detach();
-        self.fetch_details(cx);
-    }
-
-    fn on_refresh(&mut self, cx: &mut Context<Self>) {
-        self.fetch_details(cx);
     }
 
     /// Toggle inclusion of a file and persist it via the API.
@@ -486,41 +462,21 @@ impl Render for TorrentDetailPanel {
         v_flex()
             .size_full()
             .gap_0()
-            // Toolbar
-            .child(
-                h_flex()
-                    .gap_2()
-                    .pl(px(78.))
-                    .pr_2()
-                    .py_2()
-                    .bg(theme.background)
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        Button::new("back")
-                            .label("← Back")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_back(cx))),
-                    )
-                    .child(
-                        Button::new("refresh")
-                            .label("Refresh")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
-                    )
-                    .child(
-                        Button::new("pause")
-                            .label("Pause")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
-                    )
-                    .child(
-                        Button::new("start")
-                            .label("Start")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
-                    ),
-            )
             // Tab bar
             .child(
                 TabBar::new("detail-tabs")
                     .underline()
+                    .suffix(
+                        h_flex()
+                            .gap_1()
+                            .child(
+                                Button::new("close")
+                                    .icon(IconName::Close)
+                                    .ghost()
+                                    .xsmall()
+                                    .on_click(cx.listener(|this, _, _, cx| this.on_back(cx))),
+                            ),
+                    )
                     .selected_index(match active_tab {
                         DetailTab::Overview => 0,
                         DetailTab::Trackers => 1,
