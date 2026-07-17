@@ -254,10 +254,15 @@ impl MainPanel {
             return;
         }
         let api = self.state.api();
-        cx.spawn(async move |_, _| {
+        let table_state = self.table_state.clone();
+        cx.spawn(async move |_, cx| {
             for id in &ids {
                 let _ = api.api_torrent_action_pause((*id).into()).await;
             }
+            let _ = table_state.update(cx, |state, cx| {
+                state.delegate_mut().selected_rows.clear();
+                cx.notify();
+            });
         })
         .detach();
         self.fetch_torrents(cx);
@@ -269,10 +274,15 @@ impl MainPanel {
             return;
         }
         let api = self.state.api();
-        cx.spawn(async move |_, _| {
+        let table_state = self.table_state.clone();
+        cx.spawn(async move |_, cx| {
             for id in &ids {
                 let _ = api.api_torrent_action_start((*id).into()).await;
             }
+            let _ = table_state.update(cx, |state, cx| {
+                state.delegate_mut().selected_rows.clear();
+                cx.notify();
+            });
         })
         .detach();
         self.fetch_torrents(cx);
@@ -339,7 +349,8 @@ impl MainPanel {
     /// and the files are kept (`api_torrent_action_forget`).
     fn confirm_delete(&mut self, ids: Vec<usize>, delete_files: bool, cx: &mut Context<Self>) {
         let api = self.state.api();
-        cx.spawn(async move |_, _| {
+        let table_state = self.table_state.clone();
+        cx.spawn(async move |_, cx| {
             for id in &ids {
                 if delete_files {
                     let _ = api.api_torrent_action_delete((*id).into()).await;
@@ -347,6 +358,10 @@ impl MainPanel {
                     let _ = api.api_torrent_action_forget((*id).into()).await;
                 }
             }
+            let _ = table_state.update(cx, |state, cx| {
+                state.delegate_mut().selected_rows.clear();
+                cx.notify();
+            });
         })
         .detach();
         self.fetch_torrents(cx);
@@ -559,6 +574,7 @@ impl TorrentTableDelegate {
         Self {
             rows: Vec::new(),
             columns: vec![
+                Column::new("select", "").width(40.),
                 Column::new("id", "ID").width(50.),
                 Column::new("name", "Name").width(200.),
                 Column::new("state", "Status").width(80.),
@@ -592,12 +608,36 @@ impl TableDelegate for TorrentTableDelegate {
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
-        _: &mut Context<TableState<Self>>,
+        cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
         let row = &self.rows[row_ix];
         let col = &self.columns[col_ix];
 
         match col.key.as_ref() {
+            "select" => {
+                let checked = self.selected_rows.contains(&row_ix);
+                let table_state = cx.entity().clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    // Prevent the row's mouse-down handler from hijacking the toggle.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(
+                        Checkbox::new(("select-cb", row_ix))
+                            .checked(checked)
+                            .on_click(move |new_checked, _, cx| {
+                                table_state.update(cx, |state, cx| {
+                                    if *new_checked {
+                                        state.delegate_mut().selected_rows.insert(row_ix);
+                                    } else {
+                                        state.delegate_mut().selected_rows.remove(&row_ix);
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    )
+            }
             "id" => div().child(row.id.to_string()),
             "name" => div().child(row.name.clone()),
             "state" => div().child(row.state.clone()),
@@ -607,6 +647,43 @@ impl TableDelegate for TorrentTableDelegate {
             "up" => div().child(row.up_speed.clone()),
             _ => div(),
         }
+    }
+
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let col = &self.columns[col_ix];
+        if col.key.as_ref() == "select" {
+            let all_selected = !self.rows.is_empty() && self.selected_rows.len() == self.rows.len();
+            let total = self.rows.len();
+            let table_state = cx.entity().clone();
+            return div()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    Checkbox::new("select-all-cb")
+                        .checked(all_selected)
+                        .on_click(move |new_checked, _, cx| {
+                            table_state.update(cx, |state, cx| {
+                                if *new_checked {
+                                    state.delegate_mut().selected_rows = (0..total).collect();
+                                } else {
+                                    state.delegate_mut().selected_rows.clear();
+                                }
+                                cx.notify();
+                            });
+                        }),
+                )
+                .into_any_element();
+        }
+        div()
+            .size_full()
+            .child(self.column(col_ix, cx).name.clone())
+            .into_any_element()
     }
 
     fn render_tr(
