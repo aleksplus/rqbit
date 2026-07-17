@@ -828,7 +828,16 @@ impl Render for MainPanel {
                         // Resizable split: torrent table (left) + detail panel (right, conditional)
                         v_resizable("main-split")
                             .with_state(&self.resizable_state)
-                            .child(resizable_panel().child(DataTable::new(&self.table_state)))
+                            .child(
+                                resizable_panel().child(
+                                    div()
+                                        .size_full()
+                                        .overflow_hidden()
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(DataTable::new(&self.table_state).bordered(false)),
+                                ),
+                            )
                             .child(
                                 resizable_panel()
                                     .visible(self.detail_panel.is_some())
