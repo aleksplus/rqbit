@@ -58,6 +58,9 @@ pub struct MainPanel {
     footer_stats: Option<SessionStatsSnapshot>,
     /// Keeps the periodic stats polling task alive for the lifetime of the panel.
     _stats_task: Option<Task<()>>,
+    /// Whether the window is currently active (focused). When the window is
+    /// minimized or hidden, this is false and we throttle table refreshes.
+    window_active: bool,
     focus_handle: FocusHandle,
 }
 
@@ -86,6 +89,7 @@ impl MainPanel {
             pending_add_entries: None,
             footer_stats: None,
             _stats_task: None,
+            window_active: true,
             focus_handle: cx.focus_handle(),
         };
 
@@ -120,13 +124,22 @@ impl MainPanel {
         )
         .detach();
 
+        // Track window activation so we can throttle table refreshes when the
+        // window is minimized or hidden (inactive).
+        cx.observe_window_activation(window, |this, window, cx| {
+            this.window_active = window.is_window_active();
+            cx.notify();
+        })
+        .detach();
+
         this.fetch_torrents(cx);
         this.start_stats_polling(cx);
         this
     }
 
-    /// Periodically refresh session-wide stats so the footer shows live
-    /// download/upload speed and uptime. Runs until the panel is dropped.
+    /// Periodically refresh session-wide stats (footer) and the torrent table.
+    /// When the window is inactive (minimized/hidden) the table refresh is
+    /// throttled to a much longer interval to reduce unnecessary work.
     fn start_stats_polling(&mut self, cx: &mut Context<Self>) {
         let api = self.state.api();
         let task = cx.spawn(async move |this, cx| {
@@ -136,7 +149,20 @@ impl MainPanel {
                     this.footer_stats = Some(stats);
                     cx.notify();
                 });
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+
+                // Refresh the torrent table. When the window is inactive we
+                // skip the per-second refresh and only poll occasionally.
+                let active = this
+                    .update(cx, |this, _cx| this.window_active)
+                    .unwrap_or(true);
+                if active {
+                    let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                } else {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(30))
+                        .await;
+                }
             }
         });
         self._stats_task = Some(task);
