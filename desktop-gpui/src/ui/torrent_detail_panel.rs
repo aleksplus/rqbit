@@ -14,6 +14,7 @@ use librqbit::api::{
 };
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::state::State;
 use crate::ui::file_table::{FileRow, FileTableDelegate, format_bytes};
@@ -48,6 +49,11 @@ pub struct TorrentDetailPanel {
     file_table_state: Entity<TableState<FileTableDelegate>>,
     peer_table_state: Entity<TableState<PeerTableDelegate>>,
     focus_handle: FocusHandle,
+    /// Whether the window is currently active (focused). When the window is
+    /// minimized or hidden, this is false and we throttle peer-table refreshes.
+    window_active: bool,
+    /// Keeps the periodic peer-stats polling task alive for the lifetime of the panel.
+    _peer_task: Option<Task<()>>,
 }
 
 impl EventEmitter<TorrentDetailPanelEvent> for TorrentDetailPanel {}
@@ -99,8 +105,20 @@ impl TorrentDetailPanel {
             file_table_state,
             peer_table_state,
             focus_handle: cx.focus_handle(),
+            window_active: true,
+            _peer_task: None,
         };
+
+        // Track window activation so we can throttle peer-table refreshes when the
+        // window is minimized or hidden (inactive).
+        cx.observe_window_activation(window, |this, window, cx| {
+            this.window_active = window.is_window_active();
+            cx.notify();
+        })
+        .detach();
+
         this.fetch_details(cx);
+        this.start_peer_polling(cx);
         this
     }
 
@@ -192,6 +210,68 @@ impl TorrentDetailPanel {
             });
         })
         .detach();
+    }
+
+    /// Periodically refresh the peer table (and torrent stats) while the detail
+    /// panel is open. When the window is inactive (minimized/hidden) the refresh
+    /// is throttled to a much longer interval to reduce unnecessary work, mirroring
+    /// `MainPanel::start_stats_polling`.
+    fn start_peer_polling(&mut self, cx: &mut Context<Self>) {
+        let api = self.state.api();
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                // Read the current torrent id each iteration so that switching
+                // torrents (via `switch_torrent`) is reflected in the polling.
+                let torrent_id = this.update(cx, |this, _cx| this.torrent_id).unwrap_or(0);
+
+                let peer_stats = api.api_peer_stats(
+                    torrent_id.into(),
+                    PeerStatsFilter {
+                        state: PeerStatsFilterState::All,
+                    },
+                );
+                let stats = api.api_stats_v1(torrent_id.into());
+
+                let _ = this.update(cx, |this, cx| {
+                    if let Ok(ref ps) = peer_stats {
+                        let peer_rows: Vec<PeerRow> = ps
+                            .peers
+                            .iter()
+                            .map(|(addr, p)| PeerRow {
+                                address: addr.clone(),
+                                state: p.state.to_string(),
+                                client: p.client_name.clone().unwrap_or_default(),
+                                conn_kind: p.conn_kind.map(|k| k.to_string()).unwrap_or_default(),
+                                downloaded: p.counters.fetched_bytes,
+                                uploaded: p.counters.uploaded_bytes,
+                            })
+                            .collect();
+                        let _ = this.peer_table_state.update(cx, |state, cx| {
+                            state.delegate_mut().rows = peer_rows;
+                            cx.notify();
+                        });
+                    }
+                    if let Ok(s) = stats {
+                        this.stats = Some(s);
+                    }
+                    this.peer_stats = peer_stats.ok();
+                    cx.notify();
+                });
+
+                // Throttle refreshes when the window is inactive.
+                let active = this
+                    .update(cx, |this, _cx| this.window_active)
+                    .unwrap_or(true);
+                if active {
+                    cx.background_executor().timer(Duration::from_secs(1)).await;
+                } else {
+                    cx.background_executor()
+                        .timer(Duration::from_secs(30))
+                        .await;
+                }
+            }
+        });
+        self._peer_task = Some(task);
     }
 
     fn on_back(&mut self, cx: &mut Context<Self>) {
@@ -467,15 +547,13 @@ impl Render for TorrentDetailPanel {
                 TabBar::new("detail-tabs")
                     .underline()
                     .suffix(
-                        h_flex()
-                            .gap_1()
-                            .child(
-                                Button::new("close")
-                                    .icon(IconName::Close)
-                                    .ghost()
-                                    .xsmall()
-                                    .on_click(cx.listener(|this, _, _, cx| this.on_back(cx))),
-                            ),
+                        h_flex().gap_1().child(
+                            Button::new("close")
+                                .icon(IconName::Close)
+                                .ghost()
+                                .xsmall()
+                                .on_click(cx.listener(|this, _, _, cx| this.on_back(cx))),
+                        ),
                     )
                     .selected_index(match active_tab {
                         DetailTab::Overview => 0,
