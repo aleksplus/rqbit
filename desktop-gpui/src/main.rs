@@ -121,6 +121,9 @@ async fn main() {
         // Store the state globally so all windows/views can access it
         cx.set_global(shared_state.clone());
 
+        // Bring the app to the foreground on launch (macOS: activateIgnoringOtherApps).
+        cx.activate(true);
+
         gpui_component::init(cx);
 
         let window_options = WindowOptions {
