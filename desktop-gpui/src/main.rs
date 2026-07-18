@@ -155,9 +155,7 @@ async fn main() {
 
         // Quit the app when the window is closed (native close button).
         cx.on_window_closed(move |cx: &mut App, _window_id| {
-            if window.is_active(cx).unwrap_or(false) {
-                cx.quit();
-            }
+            cx.quit();
         })
         .detach();
     });
