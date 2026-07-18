@@ -12,6 +12,9 @@ impl gpui::Global for State {}
 
 use librqbit::tracing_subscriber_config_utils::{InitLoggingOptions, init_logging};
 
+// 1. Define a global Action for quitting
+gpui::actions!(rqbit, [Quit]);
+
 #[tokio::main]
 async fn main() {
     // Logging
@@ -42,6 +45,16 @@ async fn main() {
         cx.set_global(shared_state.clone());
 
         gpui_component::init(cx);
+
+        cx.on_action(|_: &Quit, cx| {
+            cx.quit();
+        });
+
+        // Bind keyboard shortcuts to the Quit action
+        cx.bind_keys([
+            KeyBinding::new("cmd-q", Quit, None),
+            KeyBinding::new("ctrl-c", Quit, None), // For Windows/Linux
+        ]);
 
         let window_options = WindowOptions {
             titlebar: Some(TitlebarOptions {
