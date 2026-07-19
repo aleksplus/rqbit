@@ -64,6 +64,13 @@ pub struct MainPanel {
     focus_handle: FocusHandle,
 }
 
+/// Pause/start actions that can be applied to selected torrents.
+#[derive(Clone, Copy)]
+enum TorrentAction {
+    Pause,
+    Start,
+}
+
 impl MainPanel {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let state = cx.global::<State>().clone();
@@ -275,26 +282,16 @@ impl MainPanel {
     }
 
     fn on_pause(&mut self, cx: &mut Context<Self>) {
-        let ids = self.selected_torrent_ids(cx);
-        if ids.is_empty() {
-            return;
-        }
-        let api = self.state.api();
-        let table_state = self.table_state.clone();
-        cx.spawn(async move |_, cx| {
-            for id in &ids {
-                let _ = api.api_torrent_action_pause((*id).into()).await;
-            }
-            let _ = table_state.update(cx, |state, cx| {
-                state.delegate_mut().selected_rows.clear();
-                cx.notify();
-            });
-        })
-        .detach();
-        self.fetch_torrents(cx);
+        self.run_action_on_selected(cx, TorrentAction::Pause);
     }
 
     fn on_start(&mut self, cx: &mut Context<Self>) {
+        self.run_action_on_selected(cx, TorrentAction::Start);
+    }
+
+    /// Apply a pause/start action to all currently selected torrents, then
+    /// clear the selection and refresh the table.
+    fn run_action_on_selected(&mut self, cx: &mut Context<Self>, action: TorrentAction) {
         let ids = self.selected_torrent_ids(cx);
         if ids.is_empty() {
             return;
@@ -303,7 +300,14 @@ impl MainPanel {
         let table_state = self.table_state.clone();
         cx.spawn(async move |_, cx| {
             for id in &ids {
-                let _ = api.api_torrent_action_start((*id).into()).await;
+                match action {
+                    TorrentAction::Pause => {
+                        let _ = api.api_torrent_action_pause((*id).into()).await;
+                    }
+                    TorrentAction::Start => {
+                        let _ = api.api_torrent_action_start((*id).into()).await;
+                    }
+                }
             }
             let _ = table_state.update(cx, |state, cx| {
                 state.delegate_mut().selected_rows.clear();
@@ -834,28 +838,16 @@ impl TableDelegate for TorrentTableDelegate {
             .map(|d| d.output_folder)
             .unwrap_or_default();
 
-        menu.item(
-            PopupMenuItem::new(format!("Pause: {torrent_name}")).on_click(
-                move |_, _, cx: &mut App| {
-                    let api = cx.global::<State>().api();
-                    cx.spawn(async move |_| {
-                        let _ = api.api_torrent_action_pause(torrent_id.into()).await;
-                    })
-                    .detach();
-                },
-            ),
-        )
-        .item(
-            PopupMenuItem::new(format!("Start: {torrent_name}")).on_click(
-                move |_, _, cx: &mut App| {
-                    let api = cx.global::<State>().api();
-                    cx.spawn(async move |_| {
-                        let _ = api.api_torrent_action_start(torrent_id.into()).await;
-                    })
-                    .detach();
-                },
-            ),
-        )
+        menu.item(torrent_action_menu_item(
+            format!("Pause: {torrent_name}"),
+            torrent_id,
+            TorrentAction::Pause,
+        ))
+        .item(torrent_action_menu_item(
+            format!("Start: {torrent_name}"),
+            torrent_id,
+            TorrentAction::Start,
+        ))
         .separator()
         .item(
             PopupMenuItem::new("Open Folder").on_click(move |_, _, _cx: &mut App| {
@@ -936,6 +928,67 @@ fn format_uptime(seconds: u64) -> String {
     } else {
         format!("{secs}s")
     }
+}
+
+/// Build a context-menu item that runs a pause/start action on a torrent.
+fn torrent_action_menu_item(
+    label: String,
+    torrent_id: usize,
+    action: TorrentAction,
+) -> PopupMenuItem {
+    PopupMenuItem::new(label).on_click(move |_, _, cx: &mut App| {
+        let api = cx.global::<State>().api();
+        cx.spawn(async move |_| match action {
+            TorrentAction::Pause => {
+                let _ = api.api_torrent_action_pause(torrent_id.into()).await;
+            }
+            TorrentAction::Start => {
+                let _ = api.api_torrent_action_start(torrent_id.into()).await;
+            }
+        })
+        .detach();
+    })
+}
+
+/// Render a centered modal overlay (dimmed backdrop + panel) for a dialog
+/// entity. Clicking the backdrop invokes `close`. `max_height`, when set, caps
+/// the panel height (used for the file-selection dialog).
+fn render_modal_overlay<E: Render + 'static>(
+    dialog: &Entity<E>,
+    close: fn(&mut MainPanel, &mut Context<MainPanel>),
+    max_height: Option<Pixels>,
+    cx: &mut Context<MainPanel>,
+) -> impl IntoElement {
+    let theme = cx.theme();
+    let mut panel = v_flex()
+        .absolute()
+        .top(px(80.))
+        .left(px(80.))
+        .right(px(80.))
+        .bg(theme.background)
+        .rounded_md()
+        .border_1()
+        .border_color(theme.border)
+        .shadow_lg()
+        .p_4()
+        .overflow_hidden()
+        .child(dialog.clone())
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+    if let Some(h) = max_height {
+        panel = panel.max_h(h);
+    }
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_full()
+        .bg(theme.muted)
+        .opacity(0.8)
+        .child(panel)
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, _, cx| close(this, cx)),
+        )
 }
 
 impl Render for MainPanel {
@@ -1036,101 +1089,13 @@ impl Render for MainPanel {
                     }),
             )
             .children(self.magnet_dialog.as_ref().map(|dialog| {
-                let theme = cx.theme();
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(theme.muted)
-                    .opacity(0.8)
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .top(px(80.))
-                            .left(px(80.))
-                            .right(px(80.))
-                            .bg(theme.background)
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
-                            .p_4()
-                            .overflow_hidden()
-                            .child(dialog.clone())
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut MainPanel, _, _, cx| {
-                            this.close_magnet_dialog(cx);
-                        }),
-                    )
+                render_modal_overlay(dialog, MainPanel::close_magnet_dialog, None, cx)
             }))
             .children(self.delete_dialog.as_ref().map(|dialog| {
-                let theme = cx.theme();
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(theme.muted)
-                    .opacity(0.8)
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .top(px(80.))
-                            .left(px(80.))
-                            .right(px(80.))
-                            .bg(theme.background)
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
-                            .p_4()
-                            .overflow_hidden()
-                            .child(dialog.clone())
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut MainPanel, _, _, cx| {
-                            this.close_delete_dialog(cx);
-                        }),
-                    )
+                render_modal_overlay(dialog, MainPanel::close_delete_dialog, None, cx)
             }))
             .children(self.add_dialog.as_ref().map(|dialog| {
-                let theme = cx.theme();
-                div()
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                    .bg(theme.muted)
-                    .opacity(0.8)
-                    .child(
-                        v_flex()
-                            .absolute()
-                            .top(px(80.))
-                            .left(px(80.))
-                            .right(px(80.))
-                            .max_h(px(600.))
-                            .bg(theme.background)
-                            .rounded_md()
-                            .border_1()
-                            .border_color(theme.border)
-                            .shadow_lg()
-                            .p_4()
-                            .overflow_hidden()
-                            .child(dialog.clone())
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation()),
-                    )
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this: &mut MainPanel, _, _, cx| {
-                            this.close_add_dialog(cx);
-                        }),
-                    )
+                render_modal_overlay(dialog, MainPanel::close_add_dialog, Some(px(600.)), cx)
             }))
             .child(self.render_footer(cx))
     }
