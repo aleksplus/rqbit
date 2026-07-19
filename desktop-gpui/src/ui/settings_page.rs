@@ -1,10 +1,11 @@
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, Size,
+    ActiveTheme as _, Disableable as _, Sizable as _, Size,
     button::{Button, ButtonVariants},
     h_flex,
+    input::{Input, InputEvent, InputState},
     scroll::ScrollableElement,
-    setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings},
+    setting::{RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
 use std::{num::NonZeroU32, sync::Arc};
@@ -105,6 +106,100 @@ fn input_field(
         move |_| get(&cfg_get.read()).into(),
         move |val: SharedString, _| set(&mut cfg_set.write(), val),
     )
+}
+
+/// State backing the download-location field: the text input plus the
+/// subscription that writes typed changes back into the config.
+struct DlInputState {
+    input: Entity<InputState>,
+    _subscription: gpui::Subscription,
+}
+
+/// A download-location field that pairs a text input with a **Browse…** button.
+///
+/// The button opens the native folder picker (macOS Finder / open panel).
+/// On macOS this also triggers the OS "grant access to this folder" prompt the
+/// first time, and the granted access persists for the app — so the user is
+/// only asked once.
+fn download_location_field(
+    config: ConfigArc,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement {
+    move |options, window, cx| {
+        let value = get_dl_location(&config.read());
+        let set = set_dl_location;
+        let cfg = config.clone();
+
+        let state_entity = window.use_keyed_state("download-location-input", cx, {
+            let value = value.clone();
+            move |window, cx| {
+                let input = cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
+                let _subscription = cx.subscribe(&input, {
+                    let cfg = cfg.clone();
+                    move |_, input, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            let v = input.read(cx).value();
+                            set(&mut cfg.write(), v);
+                        }
+                    }
+                });
+                DlInputState {
+                    input,
+                    _subscription,
+                }
+            }
+        });
+
+        // Keep the displayed text in sync when the config changes externally
+        // (e.g. after picking a folder via the Browse button).
+        state_entity.update(cx, |state, cx| {
+            if state.input.read(cx).value() != value {
+                state.input.update(cx, |input, cx| {
+                    input.set_value(value.clone(), window, cx);
+                });
+            }
+        });
+
+        let state = state_entity.read(cx);
+
+        h_flex()
+            .gap_2()
+            .child(
+                Input::new(&state.input)
+                    .flex_1()
+                    .disabled(options.disabled)
+                    .with_size(options.size),
+            )
+            .child(
+                Button::new("browse-download-folder")
+                    .label("Browse…")
+                    .disabled(options.disabled)
+                    .on_click({
+                        let cfg = config.clone();
+                        move |_, _window, cx| {
+                            let rx = cx.prompt_for_paths(PathPromptOptions {
+                                files: false,
+                                directories: true,
+                                multiple: false,
+                                prompt: Some("Select download folder".into()),
+                            });
+                            let cfg = cfg.clone();
+                            cx.spawn(async move |cx| {
+                                if let Ok(Ok(Some(paths))) = rx.await
+                                    && let Some(path) = paths.into_iter().next()
+                                {
+                                    set(
+                                        &mut cfg.write(),
+                                        path.to_string_lossy().into_owned().into(),
+                                    );
+                                    cx.update(|cx| cx.refresh_windows());
+                                }
+                            })
+                            .detach();
+                        }
+                    }),
+            )
+            .into_any_element()
+    }
 }
 
 // ── Config accessors ────────────────────────────────────────────────────────
@@ -342,7 +437,7 @@ impl Render for SettingsPage {
                                     .group(SettingGroup::new().title("Download").items(vec![
                                         SettingItem::new(
                                             "Default download folder",
-                                            input_field(config.clone(), get_dl_location, set_dl_location),
+                                            SettingField::render(download_location_field(config.clone())),
                                         )
                                         .layout(Axis::Vertical),
                                     ])),
