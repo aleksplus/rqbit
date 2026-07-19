@@ -17,7 +17,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::state::State;
-use crate::ui::file_table::{FileRow, FileTableDelegate, format_bytes};
+use crate::ui::file_table::{FileRow, FileTableDelegate};
+use crate::ui::utils::{format_bytes, format_speed};
 
 /// Events emitted by [`TorrentDetailPanel`] to communicate with the parent view.
 #[derive(Clone, Debug)]
@@ -677,18 +678,4 @@ fn info_row(label: impl Into<String>, value: impl Into<String>) -> Div {
                 .child(label),
         )
         .child(div().flex_1().child(value))
-}
-
-/// Format a speed (given in Mbps) in human-readable form.
-fn format_speed(mbps: f64) -> String {
-    let bytes = mbps * 1024.0 * 1024.0;
-    if bytes >= 1024.0 * 1024.0 * 1024.0 {
-        format!("{:.1} GB/s", bytes / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024.0 * 1024.0 {
-        format!("{:.1} MB/s", bytes / (1024.0 * 1024.0))
-    } else if bytes >= 1024.0 {
-        format!("{:.1} KB/s", bytes / 1024.0)
-    } else {
-        format!("{:.0} B/s", bytes)
-    }
 }

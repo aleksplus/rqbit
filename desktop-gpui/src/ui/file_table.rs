@@ -128,7 +128,9 @@ impl TableDelegate for FileTableDelegate {
 
         match col.key.as_ref() {
             "name" => div().child(row.name.clone()).into_any_element(),
-            "size" => div().child(format_bytes(row.length)).into_any_element(),
+            "size" => div()
+                .child(crate::ui::utils::format_bytes(row.length))
+                .into_any_element(),
             "included" => {
                 let new_included = !row.included;
                 let table = self.table.clone();
@@ -152,26 +154,5 @@ impl TableDelegate for FileTableDelegate {
             }
             _ => div().into_any_element(),
         }
-    }
-}
-
-/// Format a byte count in human-readable form (binary units).
-pub fn format_bytes(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = KB * 1024.0;
-    const GB: f64 = MB * 1024.0;
-    const TB: f64 = GB * 1024.0;
-
-    let b = bytes as f64;
-    if b >= TB {
-        format!("{:.2} TiB", b / TB)
-    } else if b >= GB {
-        format!("{:.2} GiB", b / GB)
-    } else if b >= MB {
-        format!("{:.2} MiB", b / MB)
-    } else if b >= KB {
-        format!("{:.2} KiB", b / KB)
-    } else {
-        format!("{} B", bytes)
     }
 }

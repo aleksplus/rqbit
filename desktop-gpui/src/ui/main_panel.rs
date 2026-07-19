@@ -22,9 +22,10 @@ use crate::state::State;
 use crate::ui::add_torrent_dialog::{
     AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry, AddTorrentSource,
 };
-use crate::ui::file_table::{FileRow, format_bytes};
+use crate::ui::file_table::FileRow;
 use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
+use crate::ui::utils::{format_bytes, format_speed, parse_speed};
 
 /// Simplified torrent row data that implements Clone.
 #[derive(Clone)]
@@ -899,40 +900,6 @@ impl TableDelegate for TorrentTableDelegate {
 /// Parse a percentage string like `"42.1%"` into a float for sorting.
 fn parse_pct(s: &str) -> f64 {
     s.trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0)
-}
-
-/// Parse a human-readable speed string (e.g. `"1.2 MB/s"`, `"N/A"`) into a
-/// comparable bytes-per-second value for sorting.
-fn parse_speed(s: &str) -> f64 {
-    let s = s.trim();
-    if s == "N/A" {
-        return 0.0;
-    }
-    let bytes = if let Some(v) = s.strip_suffix("GB/s") {
-        v.trim().parse::<f64>().unwrap_or(0.0) * 1024.0 * 1024.0 * 1024.0
-    } else if let Some(v) = s.strip_suffix("MB/s") {
-        v.trim().parse::<f64>().unwrap_or(0.0) * 1024.0 * 1024.0
-    } else if let Some(v) = s.strip_suffix("KB/s") {
-        v.trim().parse::<f64>().unwrap_or(0.0) * 1024.0
-    } else if let Some(v) = s.strip_suffix("B/s") {
-        v.trim().parse::<f64>().unwrap_or(0.0)
-    } else {
-        0.0
-    };
-    bytes
-}
-
-fn format_speed(mbps: f64) -> String {
-    let bytes = mbps * 1024.0 * 1024.0;
-    if bytes >= 1024.0 * 1024.0 * 1024.0 {
-        format!("{:.1} GB/s", bytes / (1024.0 * 1024.0 * 1024.0))
-    } else if bytes >= 1024.0 * 1024.0 {
-        format!("{:.1} MB/s", bytes / (1024.0 * 1024.0))
-    } else if bytes >= 1024.0 {
-        format!("{:.1} KB/s", bytes / 1024.0)
-    } else {
-        format!("{:.0} B/s", bytes)
-    }
 }
 
 /// Format a duration in seconds as a compact human-readable uptime string.
