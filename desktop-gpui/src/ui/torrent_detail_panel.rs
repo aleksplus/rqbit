@@ -45,6 +45,7 @@ pub struct TorrentDetailPanel {
     active_tab: DetailTab,
     details: Option<TorrentDetailsResponse>,
     stats: Option<TorrentStats>,
+    comment: Option<String>,
     trackers: Vec<String>,
     peer_stats: Option<PeerStatsSnapshot>,
     file_table_state: Entity<TableState<FileTableDelegate>>,
@@ -101,6 +102,7 @@ impl TorrentDetailPanel {
             active_tab: DetailTab::Overview,
             details: None,
             stats: None,
+            comment: None,
             trackers: Vec::new(),
             peer_stats: None,
             file_table_state,
@@ -131,6 +133,7 @@ impl TorrentDetailPanel {
         self.torrent_id = torrent_id;
         self.details = None;
         self.stats = None;
+        self.comment = None;
         self.trackers.clear();
         self.peer_stats = None;
         self.fetch_details(cx);
@@ -205,6 +208,7 @@ impl TorrentDetailPanel {
 
                 this.details = details.ok();
                 this.stats = stats.ok();
+                this.comment = this.details.as_ref().and_then(|d| d.comment.clone());
                 this.trackers = trackers;
                 this.peer_stats = peer_stats.ok();
                 cx.notify();
@@ -450,7 +454,30 @@ impl TorrentDetailPanel {
                     .child(info_row("Info Hash", info_hash))
                     .child(info_row("Output Folder", output_folder))
                     .child(info_row("Total Pieces", total_pieces.to_string()))
-                    .child(info_row("State", state_str)),
+                    .child(info_row("State", state_str))
+                    .children(self.comment.as_ref().map(|comment| {
+                        h_flex()
+                            .gap_2()
+                            .items_center()
+                            .py_1()
+                            .child(
+                                div()
+                                    .w(px(140.))
+                                    .flex_shrink_0()
+                                    .text_color(theme.muted_foreground)
+                                    .child("Comment"),
+                            )
+                            .child(
+                                Button::new("btn-link")
+                                    .link()
+                                    .label(comment.clone())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(comment) = this.comment.clone() {
+                                            cx.open_url(&comment);
+                                        }
+                                    })),
+                            )
+                    })),
             )
             .child(
                 v_flex()

@@ -228,6 +228,7 @@ impl Api {
                         // These will be filled in /details and /stats endpoints
                         files: None,
                         stats: None,
+                        comment: None,
                     };
                     if opts.with_stats {
                         r.stats = Some(mgr.stats());
@@ -257,6 +258,12 @@ impl Api {
             handle.name().as_deref(),
             only_files.as_deref(),
             output_folder,
+            handle
+                .metadata
+                .load()
+                .as_ref()
+                .and_then(|m| m.comment.as_ref())
+                .map(|c| c.to_string()),
         )
     }
 
@@ -398,6 +405,12 @@ impl Api {
                         .output_folder
                         .to_string_lossy()
                         .into_owned(),
+                    handle
+                        .metadata
+                        .load()
+                        .as_ref()
+                        .and_then(|m| m.comment.as_ref())
+                        .map(|c| c.to_string()),
                 )
                 .context("error making torrent details")?;
                 ApiAddTorrentResponse {
@@ -430,6 +443,7 @@ impl Api {
                     None,
                     only_files.as_deref(),
                     output_folder.to_string_lossy().into_owned().to_string(),
+                    None,
                 )
                 .context("error making torrent details")?,
             },
@@ -446,6 +460,12 @@ impl Api {
                         .output_folder
                         .to_string_lossy()
                         .into_owned(),
+                    handle
+                        .metadata
+                        .load()
+                        .as_ref()
+                        .and_then(|m| m.comment.as_ref())
+                        .map(|c| c.to_string()),
                 )
                 .context("error making torrent details")?;
                 ApiAddTorrentResponse {
@@ -549,6 +569,8 @@ pub struct TorrentDetailsResponse {
     pub files: Option<Vec<TorrentDetailsResponseFile>>,
     #[serde(skip_serializing_if = "Option::is_none", skip_deserializing)]
     pub stats: Option<TorrentStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -566,6 +588,7 @@ fn make_torrent_details(
     name: Option<&str>,
     only_files: Option<&[usize]>,
     output_folder: String,
+    comment: Option<String>,
 ) -> Result<TorrentDetailsResponse> {
     let files = match info {
         Some(info) => info
@@ -596,6 +619,7 @@ fn make_torrent_details(
         files: Some(files),
         output_folder,
         total_pieces,
+        comment,
         stats: None,
     })
 }

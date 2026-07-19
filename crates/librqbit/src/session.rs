@@ -1156,6 +1156,7 @@ impl Session {
                             torrent.meta.info.data.validate()?,
                             torrent.torrent_bytes,
                             torrent.meta.info.raw_bytes.0,
+                            torrent.meta.comment.clone(),
                         )?),
                         trackers: trackers
                             .iter()
@@ -1663,6 +1664,7 @@ impl Session {
                         info,
                         torrent_file_from_info_bytes(info_bytes.as_ref(), trackers)?,
                         info_bytes.0,
+                        None,
                     )?,
                     peer_rx: rx,
                     seen_peers: {
