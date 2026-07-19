@@ -692,7 +692,6 @@ impl TorrentTableDelegate {
             rows: Vec::new(),
             columns: vec![
                 Column::new("select", "").width(40.),
-                Column::new("id", "ID").width(50.).sortable(),
                 Column::new("name", "Name").width(200.).sortable(),
                 Column::new("state", "Status").width(80.).sortable(),
                 Column::new("progress", "Progress").width(80.).sortable(),
@@ -751,7 +750,6 @@ impl TorrentTableDelegate {
         // Ordering comparator for the active column. Larger == "greater".
         let cmp = |a: &TorrentRow, b: &TorrentRow| -> std::cmp::Ordering {
             match key.as_str() {
-                "id" => a.id.cmp(&b.id),
                 "name" => a.name.cmp(&b.name),
                 "state" => a.state.cmp(&b.state),
                 "progress" => parse_pct(&a.progress)
@@ -827,7 +825,6 @@ impl TableDelegate for TorrentTableDelegate {
                             }),
                     )
             }
-            "id" => div().child(row.id.to_string()),
             "name" => div().child(row.name.clone()),
             "state" => div().child(row.state.clone()),
             "progress" => div().child(row.progress.clone()),
