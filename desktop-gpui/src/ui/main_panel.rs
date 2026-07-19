@@ -240,6 +240,8 @@ impl MainPanel {
                     .filter_map(|&ix| state.delegate().rows.get(ix).map(|r| r.id))
                     .collect();
                 state.delegate_mut().rows = rows;
+                // Re-apply the active sort so the refreshed data stays ordered.
+                state.delegate_mut().apply_sort();
                 // Re-select rows whose torrent IDs match the previous selection.
                 state.delegate_mut().selected_rows = state
                     .delegate()
@@ -595,6 +597,10 @@ struct TorrentTableDelegate {
     selected_rows: HashSet<usize>,
     /// The anchor row for shift-click range selection.
     anchor_row: Option<usize>,
+    /// Currently active sort column index (None = no active sort).
+    sort_col_ix: Option<usize>,
+    /// Currently active sort direction.
+    sort_dir: ColumnSort,
     /// Weak handle to the parent [`MainPanel`] so the context menu can open dialogs.
     main_panel: WeakEntity<MainPanel>,
 }
@@ -615,7 +621,51 @@ impl TorrentTableDelegate {
             ],
             selected_rows: HashSet::new(),
             anchor_row: None,
+            sort_col_ix: None,
+            sort_dir: ColumnSort::Default,
             main_panel,
+        }
+    }
+
+    /// Apply the currently persisted sort (`sort_col_ix` / `sort_dir`) to
+    /// `self.rows`. No-op when no sort is active. Used both after a manual
+    /// header click and after each data refresh so the sort survives updates.
+    fn apply_sort(&mut self) {
+        let Some(col_ix) = self.sort_col_ix else {
+            return;
+        };
+        let Some(col) = self.columns.get(col_ix) else {
+            return;
+        };
+        let key = col.key.as_ref().to_string();
+
+        // Ordering comparator for the active column. Larger == "greater".
+        let cmp = |a: &TorrentRow, b: &TorrentRow| -> std::cmp::Ordering {
+            match key.as_str() {
+                "id" => a.id.cmp(&b.id),
+                "name" => a.name.cmp(&b.name),
+                "state" => a.state.cmp(&b.state),
+                "progress" => parse_pct(&a.progress)
+                    .partial_cmp(&parse_pct(&b.progress))
+                    .unwrap_or(std::cmp::Ordering::Equal),
+                "peers" => a
+                    .peers
+                    .parse::<u32>()
+                    .unwrap_or(0)
+                    .cmp(&b.peers.parse::<u32>().unwrap_or(0)),
+                "down" => parse_speed(&a.down_speed).total_cmp(&parse_speed(&b.down_speed)),
+                "up" => parse_speed(&a.up_speed).total_cmp(&parse_speed(&b.up_speed)),
+                _ => std::cmp::Ordering::Equal,
+            }
+        };
+
+        match self.sort_dir {
+            ColumnSort::Default => self.rows.sort_by_key(|r| r.id),
+            ColumnSort::Ascending => self.rows.sort_by(cmp),
+            ColumnSort::Descending => {
+                self.rows.sort_by(cmp);
+                self.rows.reverse();
+            }
         }
     }
 }
@@ -729,39 +779,11 @@ impl TableDelegate for TorrentTableDelegate {
         _window: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        let Some(col) = self.columns.get(col_ix) else {
-            return;
-        };
-        let key = col.key.as_ref().to_string();
-
-        // Ordering comparator for the active column. Larger == "greater".
-        let cmp = |a: &TorrentRow, b: &TorrentRow| -> std::cmp::Ordering {
-            match key.as_str() {
-                "id" => a.id.cmp(&b.id),
-                "name" => a.name.cmp(&b.name),
-                "state" => a.state.cmp(&b.state),
-                "progress" => parse_pct(&a.progress)
-                    .partial_cmp(&parse_pct(&b.progress))
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                "peers" => a
-                    .peers
-                    .parse::<u32>()
-                    .unwrap_or(0)
-                    .cmp(&b.peers.parse::<u32>().unwrap_or(0)),
-                "down" => parse_speed(&a.down_speed).total_cmp(&parse_speed(&b.down_speed)),
-                "up" => parse_speed(&a.up_speed).total_cmp(&parse_speed(&b.up_speed)),
-                _ => std::cmp::Ordering::Equal,
-            }
-        };
-
-        match sort {
-            ColumnSort::Default => self.rows.sort_by_key(|r| r.id),
-            ColumnSort::Ascending => self.rows.sort_by(cmp),
-            ColumnSort::Descending => {
-                self.rows.sort_by(cmp);
-                self.rows.reverse();
-            }
-        }
+        // Persist the active sort so it survives subsequent data refreshes
+        // (which replace `self.rows` wholesale).
+        self.sort_col_ix = Some(col_ix);
+        self.sort_dir = sort;
+        self.apply_sort();
 
         // Row indices shifted, so any index-based selection is now stale.
         self.selected_rows.clear();
