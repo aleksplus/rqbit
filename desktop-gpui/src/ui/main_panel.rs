@@ -1,7 +1,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{WeakEntity, *};
+use gpui_component::Sizable;
 use gpui_component::{
-    ActiveTheme as _, StyledExt,
+    ActiveTheme as _, IconName, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -1000,45 +1001,87 @@ impl Render for MainPanel {
             .size_full()
             .gap_0()
             .child(
+                // Application title bar (draggable; handles macOS traffic-light padding).
+                TitleBar::new()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(div().text_base().font_semibold().child("Rqbit Desktop"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(format!("v{}", librqbit::version())),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                Button::new("add-torrent")
+                                    .label("Add Torrent…")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_add_torrent_files(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("add-magnet")
+                                    .label("Add Magnet…")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_add_magnet(window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("settings")
+                                    .icon(IconName::Settings)
+                                    .small()
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_settings(window, cx)
+                                    })),
+                            ),
+                    )
+                    .pr(px(10.)),
+            )
+            .child(
                 // Toolbar (extra left padding for macOS traffic lights)
                 h_flex()
                     .gap_2()
-                    .pl(px(78.))
-                    .pr_2()
-                    .py_2()
                     .bg(theme.background)
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(
-                        Button::new("refresh")
-                            .label("Refresh")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
-                    )
-                    .child(Button::new("add-torrent").label("Add Torrent…").on_click(
-                        cx.listener(|this, _, window, cx| this.on_add_torrent_files(window, cx)),
-                    ))
-                    .child(Button::new("add-magnet").label("Add Magnet…").on_click(
-                        cx.listener(|this, _, window, cx| this.on_add_magnet(window, cx)),
-                    ))
+                    .pl(px(10.))
+                    .pt(px(5.))
+                    .pl(px(10.))
+                    .pb(px(5.))
                     .child(
                         Button::new("pause")
                             .label("Pause")
+                            .small()
                             .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
                     )
                     .child(
                         Button::new("start")
                             .label("Start")
+                            .small()
                             .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
                     )
                     .child(
-                        Button::new("delete").label("Delete").on_click(
+                        Button::new("delete").label("Delete").small().on_click(
                             cx.listener(|this, _, window, cx| this.on_delete(window, cx)),
                         ),
                     )
                     .child(
-                        Button::new("settings").label("Settings").on_click(
-                            cx.listener(|this, _, window, cx| this.on_settings(window, cx)),
-                        ),
+                        Button::new("refresh")
+                            .label("Refresh")
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
                     ),
             )
             .child(

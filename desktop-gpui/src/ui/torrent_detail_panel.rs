@@ -544,6 +544,8 @@ impl Render for TorrentDetailPanel {
             .size_full()
             .gap_0()
             // Tab bar
+            .pl(px(10.))
+            .pr(px(10.))
             .child(
                 TabBar::new("detail-tabs")
                     .underline()
