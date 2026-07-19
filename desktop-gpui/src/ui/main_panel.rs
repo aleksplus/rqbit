@@ -2,13 +2,15 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::{WeakEntity, *};
 use gpui_component::Sizable;
 use gpui_component::{
-    ActiveTheme as _, IconName, StyledExt, TitleBar,
+    ActiveTheme as _, IconName, Size, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
-    input::{Input, InputState},
+    input::{Input, InputEvent, InputState},
     menu::PopupMenuItem,
     resizable::{ResizableState, resizable_panel, v_resizable},
+    searchable_list::SearchableVec,
+    select::{Select, SelectEvent, SelectState},
     table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
     v_flex,
 };
@@ -58,6 +60,10 @@ pub struct MainPanel {
     pending_add_entries: Option<Vec<AddTorrentEntry>>,
     /// Latest session-wide stats for the footer (download/upload speed, uptime).
     footer_stats: Option<SessionStatsSnapshot>,
+    /// Search box for filtering torrents by name.
+    search_input: Entity<InputState>,
+    /// Status filter dropdown (empty string = "All").
+    status_filter: Entity<SelectState<SearchableVec<String>>>,
     /// Keeps the periodic stats polling task alive for the lifetime of the panel.
     _stats_task: Option<Task<()>>,
     /// Whether the window is currently active (focused). When the window is
@@ -97,6 +103,22 @@ impl MainPanel {
             add_dialog: None,
             pending_add_entries: None,
             footer_stats: None,
+            search_input: cx
+                .new(|_cx| InputState::new(window, _cx).placeholder("Search torrents…")),
+            status_filter: cx.new(|_cx| {
+                SelectState::new(
+                    SearchableVec::new(vec![
+                        "".to_string(),
+                        "initializing".to_string(),
+                        "live".to_string(),
+                        "paused".to_string(),
+                        "error".to_string(),
+                    ]),
+                    None,
+                    window,
+                    _cx,
+                )
+            }),
             _stats_task: None,
             window_active: true,
             focus_handle: cx.focus_handle(),
@@ -141,6 +163,25 @@ impl MainPanel {
         })
         .detach();
 
+        // Re-apply the search/filter whenever the search box text changes.
+        let search_input = this.search_input.clone();
+        cx.subscribe(&search_input, |this, _, event: &InputEvent, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.apply_search_and_filter(cx);
+            }
+        })
+        .detach();
+
+        // Re-apply the search/filter whenever the status dropdown changes.
+        let status_filter = this.status_filter.clone();
+        cx.subscribe(
+            &status_filter,
+            |this, _, _event: &SelectEvent<SearchableVec<String>>, cx| {
+                this.apply_search_and_filter(cx);
+            },
+        )
+        .detach();
+
         this.fetch_torrents(cx);
         this.start_stats_polling(cx);
         this
@@ -175,6 +216,25 @@ impl MainPanel {
             }
         });
         self._stats_task = Some(task);
+    }
+
+    /// Re-derive the visible table rows from the current search text and status
+    /// filter. Safe to call on every keystroke / dropdown change; the full
+    /// `all_rows` set is preserved so live status updates are not lost.
+    fn apply_search_and_filter(&mut self, cx: &mut Context<Self>) {
+        let search = self.search_input.read(cx).value().to_string();
+        let status = self
+            .status_filter
+            .read(cx)
+            .selected_value()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        let table_state = self.table_state.clone();
+        table_state.update(cx, |state, cx| {
+            state.delegate_mut().apply_filter(&search, &status);
+            cx.notify();
+        });
+        cx.notify();
     }
 
     fn fetch_torrents(&mut self, cx: &mut Context<Self>) {
@@ -241,9 +301,24 @@ impl MainPanel {
                     .iter()
                     .filter_map(|&ix| state.delegate().rows.get(ix).map(|r| r.id))
                     .collect();
-                state.delegate_mut().rows = rows;
-                // Re-apply the active sort so the refreshed data stays ordered.
-                state.delegate_mut().apply_sort();
+                state.delegate_mut().all_rows = rows;
+                // Derive the visible rows from the full set using the active
+                // search text + status filter, then re-apply the active sort.
+                let (search, status) = this
+                    .upgrade()
+                    .map(|this| {
+                        let search = this.read(cx).search_input.read(cx).value().to_string();
+                        let status = this
+                            .read(cx)
+                            .status_filter
+                            .read(cx)
+                            .selected_value()
+                            .map(|s| s.to_string())
+                            .unwrap_or_default();
+                        (search, status)
+                    })
+                    .unwrap_or_default();
+                state.delegate_mut().apply_filter(&search, &status);
                 // Re-select rows whose torrent IDs match the previous selection.
                 state.delegate_mut().selected_rows = state
                     .delegate()
@@ -593,6 +668,9 @@ impl MainPanel {
 
 /// Table delegate that holds torrent row data.
 struct TorrentTableDelegate {
+    /// Full, unfiltered set of rows as last fetched from the API. The visible
+    /// `rows` are derived from this by [`TorrentTableDelegate::apply_filter`].
+    all_rows: Vec<TorrentRow>,
     rows: Vec<TorrentRow>,
     columns: Vec<Column>,
     /// Multi-selection state: set of selected row indices.
@@ -610,6 +688,7 @@ struct TorrentTableDelegate {
 impl TorrentTableDelegate {
     fn new(main_panel: WeakEntity<MainPanel>) -> Self {
         Self {
+            all_rows: Vec::new(),
             rows: Vec::new(),
             columns: vec![
                 Column::new("select", "").width(40.),
@@ -627,6 +706,34 @@ impl TorrentTableDelegate {
             sort_dir: ColumnSort::Default,
             main_panel,
         }
+    }
+
+    /// Recompute the visible `rows` from `all_rows` by applying the active
+    /// search text (name substring, case-insensitive) and status filter
+    /// (exact match against the torrent's `state`). Called after every data
+    /// refresh and whenever the search box or status dropdown changes, so the
+    /// view stays correct even as torrent statuses update live.
+    fn apply_filter(&mut self, search: &str, status: &str) {
+        let needle = search.trim().to_lowercase();
+        self.rows = self
+            .all_rows
+            .iter()
+            .filter(|r| {
+                if !needle.is_empty() && !r.name.to_lowercase().contains(&needle) {
+                    return false;
+                }
+                if !status.is_empty() && r.state != status {
+                    return false;
+                }
+                true
+            })
+            .cloned()
+            .collect();
+        // Row indices shifted, so any index-based selection is now stale.
+        self.selected_rows.clear();
+        self.anchor_row = None;
+        // Keep the visible rows ordered per the active sort.
+        self.apply_sort();
     }
 
     /// Apply the currently persisted sort (`sort_col_ix` / `sort_dir`) to
@@ -1058,30 +1165,51 @@ impl Render for MainPanel {
                     .border_color(theme.border)
                     .pl(px(10.))
                     .pt(px(5.))
-                    .pl(px(10.))
+                    .pr(px(10.))
                     .pb(px(5.))
                     .child(
-                        Button::new("pause")
-                            .label("Pause")
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("pause")
+                                    .label("Pause")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
+                            )
+                            .child(
+                                Button::new("start")
+                                    .label("Start")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
+                            )
+                            .child(Button::new("delete").label("Delete").small().on_click(
+                                cx.listener(|this, _, window, cx| this.on_delete(window, cx)),
+                            ))
+                            .child(
+                                Button::new("refresh")
+                                    .label("Refresh")
+                                    .small()
+                                    .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
+                            ),
                     )
+                    .child(h_flex().flex_grow_1().size_full())
                     .child(
-                        Button::new("start")
-                            .label("Start")
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
-                    )
-                    .child(
-                        Button::new("delete").label("Delete").small().on_click(
-                            cx.listener(|this, _, window, cx| this.on_delete(window, cx)),
-                        ),
-                    )
-                    .child(
-                        Button::new("refresh")
-                            .label("Refresh")
-                            .small()
-                            .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Select::new(&self.status_filter)
+                                    .with_size(Size::Small)
+                                    .placeholder("All statuses")
+                                    .w(px(100.))
+                                    .size_full(),
+                            )
+                            .child(
+                                Input::new(&self.search_input)
+                                    .with_size(Size::Small)
+                                    .cleanable(true)
+                                    .min_w(px(200.))
+                                    .w(px(200.)),
+                            ),
                     ),
             )
             .child(
