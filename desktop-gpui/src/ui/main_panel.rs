@@ -8,7 +8,7 @@ use gpui_component::{
     input::{Input, InputState},
     menu::PopupMenuItem,
     resizable::{ResizableState, resizable_panel, v_resizable},
-    table::{Column, DataTable, TableDelegate, TableEvent, TableState},
+    table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
     v_flex,
 };
 use librqbit::AddTorrentOptions;
@@ -601,13 +601,13 @@ impl TorrentTableDelegate {
             rows: Vec::new(),
             columns: vec![
                 Column::new("select", "").width(40.),
-                Column::new("id", "ID").width(50.),
-                Column::new("name", "Name").width(200.),
-                Column::new("state", "Status").width(80.),
-                Column::new("progress", "Progress").width(80.),
-                Column::new("peers", "Peers").width(60.),
-                Column::new("down", "Down Speed").width(100.),
-                Column::new("up", "Up Speed").width(100.),
+                Column::new("id", "ID").width(50.).sortable(),
+                Column::new("name", "Name").width(200.).sortable(),
+                Column::new("state", "Status").width(80.).sortable(),
+                Column::new("progress", "Progress").width(80.).sortable(),
+                Column::new("peers", "Peers").width(60.).sortable(),
+                Column::new("down", "Down Speed").width(100.).sortable(),
+                Column::new("up", "Up Speed").width(100.).sortable(),
             ],
             selected_rows: HashSet::new(),
             anchor_row: None,
@@ -710,6 +710,59 @@ impl TableDelegate for TorrentTableDelegate {
             .size_full()
             .child(self.column(col_ix, cx).name.clone())
             .into_any_element()
+    }
+
+    /// Sort the torrent rows by the clicked column.
+    ///
+    /// Triggered by the table's built-in sort icon (rendered for any column that
+    /// is `.sortable()`). `sort` is the new direction the table is cycling to:
+    /// `Ascending` -> `Default` (unsorted, restored to API id order) ->
+    /// `Descending`.
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        let Some(col) = self.columns.get(col_ix) else {
+            return;
+        };
+        let key = col.key.as_ref().to_string();
+
+        // Ordering comparator for the active column. Larger == "greater".
+        let cmp = |a: &TorrentRow, b: &TorrentRow| -> std::cmp::Ordering {
+            match key.as_str() {
+                "id" => a.id.cmp(&b.id),
+                "name" => a.name.cmp(&b.name),
+                "state" => a.state.cmp(&b.state),
+                "progress" => parse_pct(&a.progress)
+                    .partial_cmp(&parse_pct(&b.progress))
+                    .unwrap_or(std::cmp::Ordering::Equal),
+                "peers" => a
+                    .peers
+                    .parse::<u32>()
+                    .unwrap_or(0)
+                    .cmp(&b.peers.parse::<u32>().unwrap_or(0)),
+                "down" => parse_speed(&a.down_speed).total_cmp(&parse_speed(&b.down_speed)),
+                "up" => parse_speed(&a.up_speed).total_cmp(&parse_speed(&b.up_speed)),
+                _ => std::cmp::Ordering::Equal,
+            }
+        };
+
+        match sort {
+            ColumnSort::Default => self.rows.sort_by_key(|r| r.id),
+            ColumnSort::Ascending => self.rows.sort_by(cmp),
+            ColumnSort::Descending => {
+                self.rows.sort_by(cmp);
+                self.rows.reverse();
+            }
+        }
+
+        // Row indices shifted, so any index-based selection is now stale.
+        self.selected_rows.clear();
+        self.anchor_row = None;
+        cx.notify();
     }
 
     fn render_tr(
@@ -827,6 +880,32 @@ impl TableDelegate for TorrentTableDelegate {
             }),
         )
     }
+}
+
+/// Parse a percentage string like `"42.1%"` into a float for sorting.
+fn parse_pct(s: &str) -> f64 {
+    s.trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// Parse a human-readable speed string (e.g. `"1.2 MB/s"`, `"N/A"`) into a
+/// comparable bytes-per-second value for sorting.
+fn parse_speed(s: &str) -> f64 {
+    let s = s.trim();
+    if s == "N/A" {
+        return 0.0;
+    }
+    let bytes = if let Some(v) = s.strip_suffix("GB/s") {
+        v.trim().parse::<f64>().unwrap_or(0.0) * 1024.0 * 1024.0 * 1024.0
+    } else if let Some(v) = s.strip_suffix("MB/s") {
+        v.trim().parse::<f64>().unwrap_or(0.0) * 1024.0 * 1024.0
+    } else if let Some(v) = s.strip_suffix("KB/s") {
+        v.trim().parse::<f64>().unwrap_or(0.0) * 1024.0
+    } else if let Some(v) = s.strip_suffix("B/s") {
+        v.trim().parse::<f64>().unwrap_or(0.0)
+    } else {
+        0.0
+    };
+    bytes
 }
 
 fn format_speed(mbps: f64) -> String {
