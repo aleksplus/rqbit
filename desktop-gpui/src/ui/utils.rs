@@ -24,7 +24,7 @@ fn format_binary(bytes: f64, suffix: &str, decimals: usize, labels: [&str; 4]) -
     } else {
         return format!("{:.0} B{}", bytes, suffix);
     };
-    format!("{:.1$} {}{}B{}", bytes / div, decimals, unit, suffix)
+    format!("{0:.1$} {2}B{3}", bytes / div, decimals, unit, suffix)
 }
 
 /// Format a byte count in human-readable form (binary units).
