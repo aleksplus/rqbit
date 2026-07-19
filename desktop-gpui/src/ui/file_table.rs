@@ -1,7 +1,7 @@
 use gpui::*;
 use gpui_component::{
     checkbox::Checkbox,
-    table::{Column, TableDelegate, TableState},
+    table::{Column, ColumnSort, TableDelegate, TableState},
 };
 use std::sync::Arc;
 
@@ -27,6 +27,10 @@ pub struct FileTableDelegate {
     table: WeakEntity<TableState<FileTableDelegate>>,
     pub on_toggle: Option<Arc<dyn Fn(usize, bool, &mut App) + Send + Sync>>,
     pub on_toggle_all: Option<Arc<dyn Fn(bool, &mut App) + Send + Sync>>,
+    /// Currently active sort column index (None = no active sort).
+    sort_col_ix: Option<usize>,
+    /// Currently active sort direction.
+    sort_dir: ColumnSort,
 }
 
 impl FileTableDelegate {
@@ -41,9 +45,42 @@ impl FileTableDelegate {
                     .width(35.)
                     .text_center()
                     .selectable(false),
-                Column::new("name", "File Name").width(300.),
-                Column::new("size", "Size").width(100.),
+                Column::new("name", "File Name").width(300.).sortable(),
+                Column::new("size", "Size").width(100.).sortable(),
             ],
+            // Default sort by file name (ascending).
+            sort_col_ix: Some(1),
+            sort_dir: ColumnSort::Ascending,
+        }
+    }
+
+    /// Apply the currently persisted sort (`sort_col_ix` / `sort_dir`) to
+    /// `self.rows`. No-op when no sort is active. Called after each data
+    /// refresh so the sort survives live updates.
+    pub(crate) fn apply_sort(&mut self) {
+        let Some(col_ix) = self.sort_col_ix else {
+            return;
+        };
+        let Some(col) = self.columns.get(col_ix) else {
+            return;
+        };
+        let key = col.key.as_ref().to_string();
+
+        let cmp = |a: &FileRow, b: &FileRow| -> std::cmp::Ordering {
+            match key.as_str() {
+                "name" => a.name.cmp(&b.name),
+                "size" => a.length.cmp(&b.length),
+                _ => std::cmp::Ordering::Equal,
+            }
+        };
+
+        match self.sort_dir {
+            ColumnSort::Default => self.rows.sort_by_key(|r| r.name.clone()),
+            ColumnSort::Ascending => self.rows.sort_by(cmp),
+            ColumnSort::Descending => {
+                self.rows.sort_by(cmp);
+                self.rows.reverse();
+            }
         }
     }
 
@@ -154,5 +191,20 @@ impl TableDelegate for FileTableDelegate {
             }
             _ => div().into_any_element(),
         }
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        // Persist the active sort so it survives subsequent data refreshes
+        // (which replace `self.rows` wholesale).
+        self.sort_col_ix = Some(col_ix);
+        self.sort_dir = sort;
+        self.apply_sort();
+        cx.notify();
     }
 }

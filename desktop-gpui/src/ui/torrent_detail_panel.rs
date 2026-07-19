@@ -5,7 +5,7 @@ use gpui_component::{
     h_flex,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
-    table::{Column, DataTable, TableDelegate, TableState},
+    table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     v_flex,
 };
 use librqbit::TorrentStats;
@@ -182,7 +182,9 @@ impl TorrentDetailPanel {
                         })
                         .unwrap_or_default();
                     let _ = file_table_state.update(cx, |state, cx| {
-                        state.delegate_mut().rows = files;
+                        let delegate = state.delegate_mut();
+                        delegate.rows = files;
+                        delegate.apply_sort();
                         cx.notify();
                     });
                 }
@@ -201,7 +203,9 @@ impl TorrentDetailPanel {
                         })
                         .collect();
                     let _ = peer_table_state.update(cx, |state, cx| {
-                        state.delegate_mut().rows = peer_rows;
+                        let delegate = state.delegate_mut();
+                        delegate.rows = peer_rows;
+                        delegate.apply_sort();
                         cx.notify();
                     });
                 }
@@ -252,7 +256,9 @@ impl TorrentDetailPanel {
                             })
                             .collect();
                         let _ = this.peer_table_state.update(cx, |state, cx| {
-                            state.delegate_mut().rows = peer_rows;
+                            let delegate = state.delegate_mut();
+                            delegate.rows = peer_rows;
+                            delegate.apply_sort();
                             cx.notify();
                         });
                     }
@@ -639,6 +645,10 @@ struct PeerRow {
 struct PeerTableDelegate {
     rows: Vec<PeerRow>,
     columns: Vec<Column>,
+    /// Currently active sort column index (None = no active sort).
+    sort_col_ix: Option<usize>,
+    /// Currently active sort direction.
+    sort_dir: ColumnSort,
 }
 
 impl PeerTableDelegate {
@@ -646,13 +656,52 @@ impl PeerTableDelegate {
         Self {
             rows: Vec::new(),
             columns: vec![
-                Column::new("address", "Address").width(180.),
-                Column::new("state", "State").width(80.),
-                Column::new("client", "Client").width(150.),
-                Column::new("conn", "Connection").width(80.),
-                Column::new("downloaded", "Downloaded").width(100.),
-                Column::new("uploaded", "Uploaded").width(100.),
+                Column::new("address", "Address").width(180.).sortable(),
+                Column::new("state", "State").width(80.).sortable(),
+                Column::new("client", "Client").width(150.).sortable(),
+                Column::new("conn", "Connection").width(80.).sortable(),
+                Column::new("downloaded", "Downloaded")
+                    .width(100.)
+                    .sortable(),
+                Column::new("uploaded", "Uploaded").width(100.).sortable(),
             ],
+            // Default sort by address (ascending) so peers are stable/grouped.
+            sort_col_ix: Some(0),
+            sort_dir: ColumnSort::Ascending,
+        }
+    }
+
+    /// Apply the currently persisted sort (`sort_col_ix` / `sort_dir`) to
+    /// `self.rows`. No-op when no sort is active. Called after each data
+    /// refresh so the sort survives live updates.
+    fn apply_sort(&mut self) {
+        let Some(col_ix) = self.sort_col_ix else {
+            return;
+        };
+        let Some(col) = self.columns.get(col_ix) else {
+            return;
+        };
+        let key = col.key.as_ref().to_string();
+
+        let cmp = |a: &PeerRow, b: &PeerRow| -> std::cmp::Ordering {
+            match key.as_str() {
+                "address" => a.address.cmp(&b.address),
+                "state" => a.state.cmp(&b.state),
+                "client" => a.client.cmp(&b.client),
+                "conn" => a.conn_kind.cmp(&b.conn_kind),
+                "downloaded" => a.downloaded.cmp(&b.downloaded),
+                "uploaded" => a.uploaded.cmp(&b.uploaded),
+                _ => std::cmp::Ordering::Equal,
+            }
+        };
+
+        match self.sort_dir {
+            ColumnSort::Default => self.rows.sort_by_key(|r| r.address.clone()),
+            ColumnSort::Ascending => self.rows.sort_by(cmp),
+            ColumnSort::Descending => {
+                self.rows.sort_by(cmp);
+                self.rows.reverse();
+            }
         }
     }
 }
@@ -689,6 +738,21 @@ impl TableDelegate for PeerTableDelegate {
             "uploaded" => div().child(format_bytes(row.uploaded)),
             _ => div(),
         }
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        // Persist the active sort so it survives subsequent data refreshes
+        // (which replace `self.rows` wholesale).
+        self.sort_col_ix = Some(col_ix);
+        self.sort_dir = sort;
+        self.apply_sort();
+        cx.notify();
     }
 }
 
