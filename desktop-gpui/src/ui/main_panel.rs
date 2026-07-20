@@ -19,6 +19,7 @@ use librqbit::AddTorrentOptions;
 use librqbit::api::ApiTorrentListOpts;
 use librqbit::session_stats::snapshot::SessionStatsSnapshot;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -581,8 +582,8 @@ impl MainPanel {
             &dialog,
             |this, _entity, event: &AddTorrentDialogEvent, cx| match event {
                 AddTorrentDialogEvent::Cancelled => this.close_add_dialog(cx),
-                AddTorrentDialogEvent::AddOne(source, selection) => {
-                    this.confirm_add(source.clone(), selection.clone(), cx);
+                AddTorrentDialogEvent::AddOne(source, selection, overwrite) => {
+                    this.confirm_add(source.clone(), selection.clone(), *overwrite, cx);
                 }
                 AddTorrentDialogEvent::Finished => this.close_add_dialog(cx),
             },
@@ -602,12 +603,14 @@ impl MainPanel {
         &mut self,
         source: AddTorrentSource,
         selection: Option<Vec<usize>>,
+        overwrite: bool,
         cx: &mut Context<Self>,
     ) {
         let api = self.state.api();
         cx.spawn(async move |this, cx| {
-            let opts = selection.map(|only_files| AddTorrentOptions {
-                only_files: Some(only_files),
+            let opts = Some(AddTorrentOptions {
+                only_files: selection,
+                overwrite,
                 ..Default::default()
             });
             if let Err(e) = api.api_add_torrent(source.to_add(), opts).await {
@@ -1353,17 +1356,28 @@ async fn build_entry(
         .name
         .clone()
         .unwrap_or_else(|| response.details.info_hash.clone());
+    let output_folder = PathBuf::from(response.output_folder);
     let files: Vec<FileRow> = response
         .details
         .files
         .unwrap_or_default()
         .into_iter()
         .enumerate()
-        .map(|(idx, f)| FileRow {
-            file_index: idx,
-            name: f.name,
-            length: f.length,
-            included: true,
+        .map(|(idx, f)| {
+            // Reconstruct the on-disk path from the output folder and the
+            // torrent's relative file components, then check if it exists.
+            let mut full_path = output_folder.clone();
+            for component in &f.components {
+                full_path.push(component);
+            }
+            let exists = !f.attributes.padding && full_path.exists();
+            FileRow {
+                file_index: idx,
+                name: f.name,
+                length: f.length,
+                included: true,
+                exists,
+            }
         })
         .collect();
     Ok(AddTorrentEntry {

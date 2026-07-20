@@ -3,6 +3,7 @@ use gpui::*;
 use gpui_component::{
     ActiveTheme as _,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
     table::{DataTable, TableState},
     v_flex,
@@ -34,8 +35,9 @@ pub enum AddTorrentDialogEvent {
     /// User cancelled the dialog.
     Cancelled,
     /// A single torrent should be added with the given selected file indices.
-    /// `None` means "all files" (no selection restriction).
-    AddOne(AddTorrentSource, Option<Vec<usize>>),
+    /// `None` means "all files" (no selection restriction). The bool is whether
+    /// to overwrite existing files on disk.
+    AddOne(AddTorrentSource, Option<Vec<usize>>, bool),
     /// All torrents have been processed; the dialog can close.
     Finished,
 }
@@ -54,6 +56,8 @@ pub struct AddTorrentDialog {
     entries: Vec<AddTorrentEntry>,
     current: usize,
     table_state: Entity<TableState<FileTableDelegate>>,
+    /// Whether to overwrite existing files (required to resume/seed into them).
+    overwrite: bool,
     focus_handle: FocusHandle,
 }
 
@@ -71,10 +75,19 @@ impl AddTorrentDialog {
             entries,
             current: 0,
             table_state,
+            overwrite: false,
             focus_handle: cx.focus_handle(),
         };
         this.load_current(cx);
         this
+    }
+
+    /// Whether any of the current torrent's files already exist on disk.
+    fn current_has_existing(&self) -> bool {
+        self.entries
+            .get(self.current)
+            .map(|e| e.files.iter().any(|f| f.exists))
+            .unwrap_or(false)
     }
 
     /// Load the file rows for the current torrent into the table.
@@ -121,7 +134,11 @@ impl AddTorrentDialog {
         } else {
             Some(self.table_state.read(cx).delegate().selected_indices())
         };
-        cx.emit(AddTorrentDialogEvent::AddOne(entry.source, selection));
+        cx.emit(AddTorrentDialogEvent::AddOne(
+            entry.source,
+            selection,
+            self.overwrite,
+        ));
 
         if self.entries.is_empty() {
             cx.emit(AddTorrentDialogEvent::Finished);
@@ -139,6 +156,12 @@ impl AddTorrentDialog {
             cx.notify();
         });
     }
+
+    /// Toggle whether existing files should be overwritten when adding.
+    fn on_toggle_overwrite(&mut self, cx: &mut Context<Self>) {
+        self.overwrite = !self.overwrite;
+        cx.notify();
+    }
 }
 
 impl Render for AddTorrentDialog {
@@ -151,6 +174,7 @@ impl Render for AddTorrentDialog {
             .get(self.current)
             .map(|e| !e.files.is_empty())
             .unwrap_or(false);
+        let has_existing = self.current_has_existing();
 
         v_flex()
             .gap_3()
@@ -170,6 +194,23 @@ impl Render for AddTorrentDialog {
                     .text_color(theme.muted_foreground)
                     .child(name),
             )
+            .when(has_existing, |this| {
+                this.child(
+                    div()
+                        .p_2()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(gpui::rgb(0xb45309))
+                        .bg(gpui::rgb(0x422006))
+                        .text_color(gpui::rgb(0xfbbf24))
+                        .text_size(px(12.))
+                        .child(
+                            "Some files already exist at the destination. They will be kept \
+                             and only missing pieces downloaded. Enable \"Overwrite existing \
+                             files\" below to replace them instead (also required to resume/seed).",
+                        ),
+                )
+            })
             .child(if has_files {
                 div()
                     .flex_1()
@@ -207,22 +248,36 @@ impl Render for AddTorrentDialog {
                                 ),
                         )
                     })
-                    .justify_end()
+                    .justify_between()
                     .child(
-                        Button::new("add-cancel")
-                            .outline()
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_cancel(cx))),
+                        Checkbox::new("overwrite-existing")
+                            .checked(self.overwrite)
+                            .label("Overwrite existing files")
+                            .on_click(
+                                cx.listener(|this, _checked, _, cx| this.on_toggle_overwrite(cx)),
+                            ),
                     )
                     .child(
-                        Button::new("add-ok")
-                            .primary()
-                            .label(if self.has_more() {
-                                "Add & Next"
-                            } else {
-                                "Add Torrent"
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| this.on_add_current(cx))),
+                        h_flex()
+                            .gap_2()
+                            .child(
+                                Button::new("add-cancel")
+                                    .outline()
+                                    .label("Cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| this.on_cancel(cx))),
+                            )
+                            .child(
+                                Button::new("add-ok")
+                                    .primary()
+                                    .label(if self.has_more() {
+                                        "Add & Next"
+                                    } else {
+                                        "Add Torrent"
+                                    })
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.on_add_current(cx)),
+                                    ),
+                            ),
                     ),
             )
     }

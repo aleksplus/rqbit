@@ -177,6 +177,7 @@ impl TorrentDetailPanel {
                                     name: file.name.clone(),
                                     length: file.length,
                                     included: file.included,
+                                    exists: false,
                                 })
                                 .collect()
                         })

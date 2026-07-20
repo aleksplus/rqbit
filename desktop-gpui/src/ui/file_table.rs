@@ -12,6 +12,8 @@ pub struct FileRow {
     pub name: String,
     pub length: u64,
     pub included: bool,
+    /// Whether the file already exists on disk at the destination folder.
+    pub exists: bool,
 }
 
 /// Reusable table delegate for selecting which files of a torrent to download.
