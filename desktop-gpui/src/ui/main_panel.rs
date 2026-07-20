@@ -698,7 +698,7 @@ impl TorrentTableDelegate {
                 Column::new("select", "").width(40.),
                 Column::new("name", "Name").width(300.).sortable(),
                 Column::new("state", "Status").width(100.).sortable(),
-                Column::new("progress", "Progress").width(90.).sortable(),
+                Column::new("progress", "Progress").width(140.).sortable(),
                 Column::new("peers", "Peers").width(90.).sortable(),
                 Column::new("down", "Down Speed").width(120.).sortable(),
                 Column::new("up", "Up Speed").width(120.).sortable(),
@@ -831,13 +831,18 @@ impl TableDelegate for TorrentTableDelegate {
             }
             "name" => div().child(row.name.clone()),
             "state" => div().child(row.state.clone()),
-            "progress" => v_flex()
-                .justify_center()
-                .gap_1()
-                .child(div().child(row.progress.clone()).text_size(px(12.)))
+            "progress" => h_flex()
+                .justify_between()
+                .gap_2()
                 .child(
-                    Progress::new(("progress-bar", row_ix)).value(parse_pct(&row.progress) as f32),
-                ),
+                    div()
+                        .child(
+                            Progress::new(("progress-bar", row_ix))
+                                .value(parse_pct(&row.progress) as f32),
+                        )
+                        .min_w(px(70.)),
+                )
+                .child(div().child(row.progress.clone())),
             "peers" => div().child(row.peers.clone()),
             "down" => div().child(row.down_speed.clone()),
             "up" => div().child(row.up_speed.clone()),
@@ -1237,11 +1242,7 @@ impl Render for MainPanel {
                                         .overflow_hidden()
                                         .border_1()
                                         .border_color(cx.theme().border)
-                                        .child(
-                                            DataTable::new(&self.table_state)
-                                                .bordered(false)
-                                                .with_size(Size::Large),
-                                        ),
+                                        .child(DataTable::new(&self.table_state).bordered(false)),
                                 ),
                             )
                             .child(
