@@ -8,6 +8,7 @@ use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     menu::PopupMenuItem,
+    progress::Progress,
     resizable::{ResizableState, resizable_panel, v_resizable},
     searchable_list::SearchableVec,
     select::{Select, SelectEvent, SelectState},
@@ -827,7 +828,13 @@ impl TableDelegate for TorrentTableDelegate {
             }
             "name" => div().child(row.name.clone()),
             "state" => div().child(row.state.clone()),
-            "progress" => div().child(row.progress.clone()),
+            "progress" => v_flex()
+                .justify_center()
+                .gap_1()
+                .child(div().child(row.progress.clone()).text_size(px(12.)))
+                .child(
+                    Progress::new(("progress-bar", row_ix)).value(parse_pct(&row.progress) as f32),
+                ),
             "peers" => div().child(row.peers.clone()),
             "down" => div().child(row.down_speed.clone()),
             "up" => div().child(row.up_speed.clone()),
@@ -1227,7 +1234,11 @@ impl Render for MainPanel {
                                         .overflow_hidden()
                                         .border_1()
                                         .border_color(cx.theme().border)
-                                        .child(DataTable::new(&self.table_state).bordered(false)),
+                                        .child(
+                                            DataTable::new(&self.table_state)
+                                                .bordered(false)
+                                                .with_size(Size::Large),
+                                        ),
                                 ),
                             )
                             .child(
