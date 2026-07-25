@@ -160,7 +160,23 @@ impl MainPanel {
         // Track window activation so we can throttle table refreshes when the
         // window is minimized or hidden (inactive).
         cx.observe_window_activation(window, |this, window, cx| {
+            let was_active = this.window_active;
             this.window_active = window.is_window_active();
+
+            // When window becomes active after being inactive, refresh immediately
+            // instead of waiting for the next polling cycle.
+            if this.window_active && !was_active {
+                this.fetch_torrents(cx);
+                if let Some(panel) = &this.detail_panel {
+                    let selected_ids = this.selected_torrent_ids(cx);
+                    if let Some(torrent_id) = selected_ids.first().copied() {
+                        let _ = panel.update(cx, |panel, cx| {
+                            panel.switch_torrent(torrent_id, cx);
+                        });
+                    }
+                }
+            }
+
             cx.notify();
         })
         .detach();
