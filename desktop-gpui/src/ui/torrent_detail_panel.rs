@@ -311,9 +311,8 @@ impl TorrentDetailPanel {
                     .delegate()
                     .rows
                     .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.included)
-                    .map(|(idx, _)| idx)
+                    .filter(|r| r.included)
+                    .map(|r| r.file_index)
                     .collect::<HashSet<usize>>()
             });
 
@@ -344,9 +343,8 @@ impl TorrentDetailPanel {
                     .delegate()
                     .rows
                     .iter()
-                    .enumerate()
-                    .filter(|(_, r)| r.included)
-                    .map(|(idx, _)| idx)
+                    .filter(|r| r.included)
+                    .map(|r| r.file_index)
                     .collect::<HashSet<usize>>()
             });
 
