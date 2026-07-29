@@ -75,7 +75,7 @@ impl AddTorrentDialog {
             entries,
             current: 0,
             table_state,
-            overwrite: false,
+            overwrite: true,
             focus_handle: cx.focus_handle(),
         };
         this.load_current(cx);
@@ -230,25 +230,7 @@ impl Render for AddTorrentDialog {
             .child(
                 h_flex()
                     .gap_2()
-                    .when(has_files, |this| {
-                        this.child(
-                            Button::new("sel-all")
-                                .outline()
-                                .label("Select All Files")
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.on_select_all(true, cx)),
-                                ),
-                        )
-                        .child(
-                            Button::new("sel-none")
-                                .outline()
-                                .label("Deselect All")
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.on_select_all(false, cx)),
-                                ),
-                        )
-                    })
-                    .justify_between()
+                    .justify_end()
                     .child(
                         Checkbox::new("overwrite-existing")
                             .checked(self.overwrite)
