@@ -1443,7 +1443,7 @@ impl DeleteDialog {
             is_bulk: ids.len() > 1,
             ids,
             names,
-            delete_files: false,
+            delete_files: true,
             focus_handle: cx.focus_handle(),
         }
     }
