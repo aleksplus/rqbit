@@ -425,7 +425,6 @@ impl Render for SettingsPage {
                 div()
                     .flex_1()
                     .min_h_0()
-                    .p_4()
                     .overflow_y_scrollbar()
                     .child(
                         Settings::new("rqbit-settings")
