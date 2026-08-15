@@ -128,9 +128,10 @@ cargo clippy -p desktop-gpui
   and info dicts, not v1. The spec explicitly requires BEP 52 compliance.
 
 ## Other directives
+- Use narsil mcp for code retrieval or search (do not fallback to rg/grep or find if narsil provides response value)
+- Use context7 for documentation
+- Fetch https://longbridge.github.io/gpui-component/docs/ if needed.
 - If you need to resort to running shell commands, always use "rg" instead of "grep".
-- Prefer using Serena MCP instead of searching / reading / writing raw files when makes sense.
-- **Always run `npm run format` after modifying webui or desktop TypeScript/TSX files.**
 
 ## Desktop GPUI Implementation Plan
 
