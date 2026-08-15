@@ -15,6 +15,7 @@ members = [
     "crates/tracker_comms",
     "crates/upnp-serve",
     "desktop/src-tauri",
+    "desktop-gpui",
 ]
 
 # Everything except desktop

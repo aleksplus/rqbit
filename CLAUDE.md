@@ -4,16 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-rqbit is a BitTorrent client written in Rust with an HTTP API, Web UI, and desktop app (Tauri). The library (`librqbit`) can also be used standalone.
+rqbit is a BitTorrent client written in Rust and desktop app (GPUI). The library (`librqbit`) can also be used standalone.
 
 ## Build Commands
 
 ```bash
 # Build (release)
 cargo build --release
-
-# Build with webui feature (requires npm installed)
-cargo build --release --features webui
 
 # Run tests
 cargo test                    # default members only
@@ -27,26 +24,7 @@ cargo test -p librqbit <test_name>   # test in specific crate
 cargo fmt --all -- --check
 cargo clippy --all-targets
 
-# Format webui/desktop TypeScript (run from repo root)
-npm run format           # format all
-npm run format:check     # check only
-
-# Desktop app. You cannot test it or see it, so don't bother running expensive "cargo tauri build"
-cd desktop && npm install && tsc --noEmit
 ```
-
-## Development Server
-
-```bash
-# Run test server that simulates traffic. Points to http://localhost:3030 for the main session's web UI and API.
-# If you make changes to Rust this needs to be restarted.
-make testserver
-
-# Run webui in dev mode (hot reload vite server). Points to http://localhost:3031.
-make webui-dev
-```
-
-@crates/librqbit/webui/CLAUDE.md has some details on webui if needed.
 
 ### Log Files
 
@@ -69,7 +47,6 @@ The main library - the binary is just a thin CLI wrapper. Key components:
 - **Session** (`session.rs`): Central coordinator managing torrents, DHT, peer connections, and persistence. Entry point for the library.
 - **TorrentState** (`torrent_state/`): State machine for torrent lifecycle - initializing, live (downloading/seeding), paused
 - **Storage** (`storage/`): Pluggable storage backends (filesystem, mmap) with middleware support (caching, timing)
-- **HTTP API** (`http_api/`): REST API handlers for torrent management, streaming, DHT stats
 
 ### Supporting Crates
 - `bencode` - Bencode serialization/deserialization
@@ -82,11 +59,6 @@ The main library - the binary is just a thin CLI wrapper. Key components:
 - `buffers` - Binary buffer utilities, small wrappers around bytes::Bytes and &[u8].
 - `sha1w` - SHA1 wrapper (supports crypto-hash or openssl backends)
 
-### Web UI (`crates/librqbit/webui`)
-React + TypeScript + Tailwind CSS frontend. Shared between the HTTP API web interface and the Tauri desktop app.
-
-### Desktop App (`desktop/`)
-Tauri wrapper around the web UI.
 
 ## Rust Development
 
@@ -95,6 +67,37 @@ Tauri wrapper around the web UI.
   before declaring work complete. Never claim compilation success without verifying.
 - When fixing compiler warnings, batch all related warnings together and fix them
   in a single pass. Run `cargo check 2>&1` to capture the full list before editing.
+
+## Desktop GPUI Client
+
+The `desktop-gpui` crate provides a native desktop GUI client for rqbit using GPUI (Zed's UI framework). It uses librqbit::Api to communicate with the session, without HTTP endpoints or Prometheus.
+
+### Building
+
+```bash
+# Build the desktop client
+cargo build -p desktop-gpui
+
+# Run the desktop client
+cargo run -p desktop-gpui
+```
+
+### Architecture
+
+- **librqbit::Api-only communication**: The desktop client communicates with the session via IPC, not HTTP.
+- **GPUI framework**: Uses Zed's GPUI for a native, high-performance UI.
+- **Shared state**: Configuration and session state are shared via `Arc<RwLock<SharedState>>`.
+
+### Development
+
+```bash
+# Run with hot reload (if supported)
+cargo run -p desktop-gpui
+
+# Check code
+cargo check -p desktop-gpui
+cargo clippy -p desktop-gpui
+```
 
 ## General Rules
 - Never declare a task complete until tests actually pass and compilation is verified.
@@ -109,6 +112,7 @@ Tauri wrapper around the web UI.
   and info dicts, not v1. The spec explicitly requires BEP 52 compliance.
 
 ## Other directives
+- Use narsil mcp for code retrieval or search (do not fallback to rg/grep or find if narsil provides response value)
+- Use context7 for documentation
+- Fetch https://longbridge.github.io/gpui-component/docs/ if needed.
 - If you need to resort to running shell commands, always use "rg" instead of "grep".
-- Prefer using Serena MCP instead of searching / reading / writing raw files when makes sense.
-- **Always run `npm run format` after modifying webui or desktop TypeScript/TSX files.**

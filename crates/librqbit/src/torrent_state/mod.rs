@@ -139,6 +139,8 @@ pub struct TorrentMetadata {
     pub torrent_bytes: Bytes,
     pub info_bytes: Bytes,
     pub file_infos: FileInfos,
+    /// Top-level "comment" field from the .torrent metainfo, if present.
+    pub comment: Option<ByteBufOwned>,
 }
 
 impl TorrentMetadata {
@@ -146,6 +148,7 @@ impl TorrentMetadata {
         info: ValidatedTorrentMetaV1Info<ByteBufOwned>,
         torrent_bytes: Bytes,
         info_bytes: Bytes,
+        comment: Option<ByteBufOwned>,
     ) -> anyhow::Result<Self> {
         let file_infos = info
             .iter_file_details_ext()
@@ -165,6 +168,7 @@ impl TorrentMetadata {
             torrent_bytes,
             info_bytes,
             file_infos,
+            comment,
         })
     }
 
