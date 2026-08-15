@@ -50,7 +50,7 @@ pub struct MainPanel {
     state: Arc<State>,
     table_state: Entity<TableState<TorrentTableDelegate>>,
     resizable_state: Entity<ResizableState>,
-    config_modal: Option<Entity<SettingsPage>>,
+    settings_sidebar: Option<Entity<SettingsPage>>,
     detail_panel: Option<Entity<TorrentDetailPanel>>,
     /// Torrent ID waiting for detail panel creation (deferred until window is available in render).
     pending_detail_id: Option<usize>,
@@ -97,7 +97,7 @@ impl MainPanel {
                 .row_selectable(true)
             }),
             resizable_state: cx.new(|_cx| ResizableState::default()),
-            config_modal: None,
+            settings_sidebar: None,
             detail_panel: None,
             pending_detail_id: None,
             magnet_dialog: None,
@@ -676,12 +676,12 @@ impl MainPanel {
             },
         )
         .detach();
-        self.config_modal = Some(page);
+        self.settings_sidebar = Some(page);
         cx.notify();
     }
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
-        self.config_modal = None;
+        self.settings_sidebar = None;
         cx.notify();
     }
 }
@@ -1184,7 +1184,9 @@ impl Render for MainPanel {
                     )
                     .pr(px(10.)),
             )
-            .child(
+            .child(if let Some(settings) = &self.settings_sidebar {
+                div()
+            } else {
                 // Toolbar (extra left padding for macOS traffic lights)
                 h_flex()
                     .gap_2()
@@ -1238,13 +1240,13 @@ impl Render for MainPanel {
                                     .min_w(px(200.))
                                     .w(px(200.)),
                             ),
-                    ),
-            )
+                    )
+            })
             .child(
                 div()
                     .flex_1()
                     .min_h_0()
-                    .child(if let Some(settings) = &self.config_modal {
+                    .child(if let Some(settings) = &self.settings_sidebar {
                         // Settings page replaces the main content
                         div().size_full().child(settings.clone()).into_any_element()
                     } else {
