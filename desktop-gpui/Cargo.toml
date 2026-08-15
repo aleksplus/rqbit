@@ -15,6 +15,8 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 url.workspace = true
 librqbit = { workspace = true, features = [
     "tracing-subscriber-utils",
+    "http-api",
+    "webui",
     "upnp-serve-adapter",
     "prometheus",
     "default-tls"
