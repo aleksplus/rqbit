@@ -7,6 +7,14 @@ license = "MIT"
 repository = "https://github.com/anthropics/rqbit"
 publish = false
 
+[package.metadata.bundle]
+name = "rqbit-gpui-desktop"
+identifier = "com.rqbit.gpui-desktop"
+icon = ["icons/icon.ico", "icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"]
+version = "1.0.0"
+short_description = "Native desktop for rqbit"
+long_description = """https://github.com/aleksplus/rqbit"""
+
 [dependencies]
 gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit"] }
