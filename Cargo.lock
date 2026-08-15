@@ -2354,7 +2354,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-gpui"
-version = "9.0.0-rc.0"
+version = "9.0.0"
 dependencies = [
  "anyhow",
  "base64 0.23.1",

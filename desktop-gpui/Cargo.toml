@@ -1,8 +1,8 @@
 [package]
 name = "desktop-gpui"
-version = "9.0.0-rc.0"
+version.workspace = true
 edition = "2024"
-description = "Shared desktop logic for rqbit (used by Tauri and GPUI front‑ends)"
+description = "Native desktop for rqbit"
 license = "MIT"
 repository = "https://github.com/anthropics/rqbit"
 publish = false
@@ -15,8 +15,6 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 url.workspace = true
 librqbit = { workspace = true, features = [
     "tracing-subscriber-utils",
-    "http-api",
-    "webui",
     "upnp-serve-adapter",
     "prometheus",
     "default-tls"
