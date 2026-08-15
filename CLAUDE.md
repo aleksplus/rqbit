@@ -12,9 +12,6 @@ rqbit is a BitTorrent client written in Rust and desktop app (GPUI). The library
 # Build (release)
 cargo build --release
 
-# Build with gpui feature (requires npm installed)
-cargo build --release --features gpui
-
 # Run tests
 cargo test                    # default members only
 cargo test --workspace        # all workspace members
@@ -28,19 +25,6 @@ cargo fmt --all -- --check
 cargo clippy --all-targets
 
 ```
-
-## Development Server
-
-```bash
-# Run test server that simulates traffic. Points to http://localhost:3030 for the main session's web UI and API.
-# If you make changes to Rust this needs to be restarted.
-make testserver
-
-# Run webui in dev mode (hot reload vite server). Points to http://localhost:3031.
-# make webui-dev
-```
-
-@crates/librqbit/webui/CLAUDE.md has some details on webui if needed.
 
 ### Log Files
 
@@ -132,18 +116,3 @@ cargo clippy -p desktop-gpui
 - Use context7 for documentation
 - Fetch https://longbridge.github.io/gpui-component/docs/ if needed.
 - If you need to resort to running shell commands, always use "rg" instead of "grep".
-
-## Desktop GPUI Implementation Plan
-
-See the detailed task plan in the desktop-gpui task list:
-- **1️⃣ Cargo & crate setup**: Add dependencies, configure tokio
-- **2️⃣ Shared state abstraction**: Create `SharedState`, implement `IpcExt` trait
-- **3️⃣ Session & IPC initialisation**: Initialize session, store in GPUI context
-- **4️⃣ UI – configuration modal**: Create config modal with form fields
-- **5️⃣ UI – main panel**: Build torrent list table with action buttons
-- **6️⃣ Replace placeholder window**: Update main window to use MainPanel
-- **7️⃣ Logging**: Keep existing logging, remove Prometheus
-- **8️⃣ Integration tests**: Update tests to use real IPC
-- **9️⃣ CI / Documentation**: Add GitHub Actions workflow, update docs
-
-Each task is small enough to be committed in a single PR. See the full task list for details.

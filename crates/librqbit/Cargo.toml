@@ -125,4 +125,4 @@ pollster.workspace = true
 
 [[example]]
 name = "simulate_traffic"
-required-features = ["http-api", "webui", "gpui", "tracing-subscriber-utils", "prometheus"]
+required-features = ["http-api", "webui", "tracing-subscriber-utils", "prometheus"]
