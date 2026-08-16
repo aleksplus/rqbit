@@ -14,24 +14,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: install cargo-bundle
+        run: cargo binstall cargo-bundle --no-confirm
+
+      - name: npm install (librqbit/webui)
+        working-directory: crates/librqbit/webui
+        run: npm install
+
+      - name: Build & bundle desktop-gpui (.app)
+        working-directory: desktop-gpui
+        run: cargo bundle --release
+
+      - name: Zip desktop-gpui .app
+        run: mkdir -p target/apple-darwin && ditto -c -k --keepParent target/release/bundle/osx/rqbit-gpui-desktop.app target/apple-darwin/rqbit-gpui-desktop_arm64.app.zip
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+          draft: true
+          files: |
+            target/apple-darwin/rqbit-gpui-desktop_arm64.app.zip
+
       - name: Make a directory for output artifacts
         run: mkdir -p target/artifacts
 
-      - name: Install Rust targets
-        run: rustup target add aarch64-apple-darwin && rustup target add x86_64-apple-darwin
-
-      - name: Build release OSX universal binary (CLI)
-        run: |
-          cargo build --profile release-github --target x86_64-apple-darwin
-          cargo build --profile release-github --target aarch64-apple-darwin
+      - name: Build release OSX universal binary
+        run: rustup target install aarch64-apple-darwin &&
+          cargo build --profile release-github --target x86_64-apple-darwin &&
+          cargo build --profile release-github --target aarch64-apple-darwin &&
           lipo ./target/x86_64-apple-darwin/release-github/rqbit ./target/aarch64-apple-darwin/release-github/rqbit -create -output ./target/artifacts/rqbit-osx-universal
-
-      - name: Build release OSX universal binary (desktop-gpui)
-        working-directory: desktop-gpui
-        run: |
-          cargo build --profile release-github --target x86_64-apple-darwin
-          cargo build --profile release-github --target aarch64-apple-darwin
-          lipo ./target/x86_64-apple-darwin/release-github/desktop-gpui ./target/aarch64-apple-darwin/release-github/desktop-gpui -create -output ../target/artifacts/desktop-gpui-osx-universal
 
       - uses: softprops/action-gh-release@v3
         with:
@@ -39,4 +53,3 @@ jobs:
           draft: true
           files: |
             target/artifacts/rqbit-osx-universal
-            target/artifacts/desktop-gpui-osx-universal
