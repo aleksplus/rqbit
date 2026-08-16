@@ -34,21 +34,43 @@ use crate::ui::dialogs::{DeleteDialog, DeleteDialogEvent, MagnetDialog, MagnetDi
 use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
 use crate::ui::utils::{
-    build_entry, format_bytes, format_speed, format_uptime, parse_pct, parse_speed,
-    render_modal_overlay, torrent_action_menu_item,
+    build_entry, format_bytes, format_speed, format_uptime, render_modal_overlay,
+    torrent_action_menu_item,
 };
 
 /// Simplified torrent row data that implements Clone.
+///
+/// Each display field has a corresponding raw numeric field (suffixed `_raw`)
+/// that holds the original value from the API. Sorting uses the raw values
+/// directly, avoiding lossy re-parsing of formatted strings.
 #[derive(Clone)]
 struct TorrentRow {
     id: usize,
     name: String,
     info_hash: String,
     state: String,
+    /// Display string, e.g. "42.1%".
     progress: String,
+    /// 0.0–100.0
+    progress_raw: f64,
     peers: String,
+    /// Live peer count (connected), used for sorting.
+    peers_raw: u32,
     down_speed: String,
+    /// Download speed in bytes/s.
+    down_speed_raw: f64,
     up_speed: String,
+    /// Upload speed in bytes/s.
+    up_speed_raw: f64,
+    downloaded: String,
+    /// Downloaded bytes.
+    downloaded_raw: u64,
+    uploaded: String,
+    /// Uploaded bytes.
+    uploaded_raw: u64,
+    eta: String,
+    /// ETA in seconds; `None` means unknown / not applicable (sorts last).
+    eta_raw: Option<u64>,
 }
 
 /// Main panel that displays the list of torrents.
@@ -274,39 +296,103 @@ impl MainPanel {
                     let name = t.name.clone().unwrap_or_else(|| t.info_hash.clone());
                     let info_hash = t.info_hash.clone();
 
-                    let (state_str, progress_str, peers_str, down_str, up_str) =
-                        if let Some(stats) = &t.stats {
-                            let st = stats.state.to_string();
-                            let prog = if stats.total_bytes > 0 {
-                                let pct = (stats.progress_bytes as f64 / stats.total_bytes as f64)
-                                    * 100.0;
-                                format!("{:.1}%", pct)
-                            } else {
-                                "0%".to_string()
-                            };
-                            let (peers, down, up) = if let Some(live) = &stats.live {
+                    let (
+                        state_str,
+                        progress_str,
+                        progress_raw,
+                        peers_str,
+                        peers_raw,
+                        down_str,
+                        down_raw,
+                        up_str,
+                        up_raw,
+                        downloaded_str,
+                        downloaded_raw,
+                        uploaded_str,
+                        uploaded_raw,
+                        eta_str,
+                        eta_raw,
+                    ) = if let Some(stats) = &t.stats {
+                        let st = stats.state.to_string();
+                        let (prog, progress_raw) = if stats.total_bytes > 0 {
+                            let pct =
+                                (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0;
+                            (format!("{:.1}%", pct), pct)
+                        } else {
+                            ("0%".to_string(), 0.0)
+                        };
+                        let downloaded_raw = stats.progress_bytes;
+                        let uploaded_raw = stats.uploaded_bytes;
+                        let downloaded = format_bytes(downloaded_raw);
+                        let uploaded = format_bytes(uploaded_raw);
+                        let (peers, peers_raw, down, down_raw, up, up_raw, eta, eta_raw) =
+                            if let Some(live) = &stats.live {
+                                let peers_raw = live.snapshot.peer_stats.live;
                                 (
                                     format!(
                                         "{}/{}",
-                                        live.snapshot.peer_stats.live.to_string(),
+                                        peers_raw.to_string(),
                                         live.snapshot.peer_stats.seen.to_string(),
                                     ),
+                                    peers_raw,
                                     format_speed(live.download_speed.mbps),
+                                    live.download_speed.as_bytes() as f64,
                                     format_speed(live.upload_speed.mbps),
+                                    live.upload_speed.as_bytes() as f64,
+                                    live.time_remaining
+                                        .as_ref()
+                                        .map(|t| t.to_string())
+                                        .unwrap_or_else(|| "—".to_string()),
+                                    live.time_remaining.as_ref().map(|t| t.as_secs()),
                                 )
                             } else {
-                                ("N/A".to_string(), "N/A".to_string(), "N/A".to_string())
+                                (
+                                    "N/A".to_string(),
+                                    0,
+                                    "N/A".to_string(),
+                                    0.0,
+                                    "N/A".to_string(),
+                                    0.0,
+                                    "—".to_string(),
+                                    None,
+                                )
                             };
-                            (st, prog, peers, down, up)
-                        } else {
-                            (
-                                "Unknown".to_string(),
-                                "N/A".to_string(),
-                                "N/A".to_string(),
-                                "N/A".to_string(),
-                                "N/A".to_string(),
-                            )
-                        };
+                        (
+                            st,
+                            prog,
+                            progress_raw,
+                            peers,
+                            peers_raw,
+                            down,
+                            down_raw,
+                            up,
+                            up_raw,
+                            downloaded,
+                            downloaded_raw,
+                            uploaded,
+                            uploaded_raw,
+                            eta,
+                            eta_raw,
+                        )
+                    } else {
+                        (
+                            "Unknown".to_string(),
+                            "N/A".to_string(),
+                            0.0,
+                            "N/A".to_string(),
+                            0,
+                            "N/A".to_string(),
+                            0.0,
+                            "N/A".to_string(),
+                            0.0,
+                            "N/A".to_string(),
+                            0,
+                            "N/A".to_string(),
+                            0,
+                            "—".to_string(),
+                            None,
+                        )
+                    };
 
                     TorrentRow {
                         id,
@@ -314,9 +400,19 @@ impl MainPanel {
                         info_hash,
                         state: state_str,
                         progress: progress_str,
+                        progress_raw,
                         peers: peers_str,
+                        peers_raw,
                         down_speed: down_str,
+                        down_speed_raw: down_raw,
                         up_speed: up_str,
+                        up_speed_raw: up_raw,
+                        downloaded: downloaded_str,
+                        downloaded_raw,
+                        uploaded: uploaded_str,
+                        uploaded_raw,
+                        eta: eta_str,
+                        eta_raw,
                     }
                 })
                 .collect();
@@ -751,9 +847,14 @@ impl TorrentTableDelegate {
                 Column::new("name", "Name").width(300.).sortable(),
                 Column::new("state", "Status").width(100.).sortable(),
                 Column::new("progress", "Progress").width(140.).sortable(),
+                Column::new("down", "↓ Speed").width(120.).sortable(),
+                Column::new("downloaded", "Downloaded")
+                    .width(110.)
+                    .sortable(),
+                Column::new("up", "↑ Speed").width(120.).sortable(),
+                Column::new("uploaded", "Uploaded").width(100.).sortable(),
+                Column::new("eta", "ETA").width(100.).sortable(),
                 Column::new("peers", "Peers").width(90.).sortable(),
-                Column::new("down", "Down Speed").width(120.).sortable(),
-                Column::new("up", "Up Speed").width(120.).sortable(),
             ],
             selected_rows: HashSet::new(),
             anchor_row: None,
@@ -804,20 +905,29 @@ impl TorrentTableDelegate {
         let key = col.key.as_ref().to_string();
 
         // Ordering comparator for the active column. Larger == "greater".
+        // Uses the raw numeric fields directly — no string re-parsing.
         let cmp = |a: &TorrentRow, b: &TorrentRow| -> std::cmp::Ordering {
             match key.as_str() {
                 "name" => a.name.cmp(&b.name),
                 "state" => a.state.cmp(&b.state),
-                "progress" => parse_pct(&a.progress)
-                    .partial_cmp(&parse_pct(&b.progress))
+                "progress" => a
+                    .progress_raw
+                    .partial_cmp(&b.progress_raw)
                     .unwrap_or(std::cmp::Ordering::Equal),
-                "peers" => a
-                    .peers
-                    .parse::<u32>()
-                    .unwrap_or(0)
-                    .cmp(&b.peers.parse::<u32>().unwrap_or(0)),
-                "down" => parse_speed(&a.down_speed).total_cmp(&parse_speed(&b.down_speed)),
-                "up" => parse_speed(&a.up_speed).total_cmp(&parse_speed(&b.up_speed)),
+                "peers" => a.peers_raw.cmp(&b.peers_raw),
+                "down" => a.down_speed_raw.total_cmp(&b.down_speed_raw),
+                "downloaded" => a.downloaded_raw.cmp(&b.downloaded_raw),
+                "up" => a.up_speed_raw.total_cmp(&b.up_speed_raw),
+                "uploaded" => a.uploaded_raw.cmp(&b.uploaded_raw),
+                "eta" => {
+                    // `None` (unknown ETA) sorts last in ascending order.
+                    match (a.eta_raw, b.eta_raw) {
+                        (Some(a), Some(b)) => a.cmp(&b),
+                        (Some(_), None) => std::cmp::Ordering::Less,
+                        (None, Some(_)) => std::cmp::Ordering::Greater,
+                        (None, None) => std::cmp::Ordering::Equal,
+                    }
+                }
                 _ => std::cmp::Ordering::Equal,
             }
         };
@@ -889,15 +999,17 @@ impl TableDelegate for TorrentTableDelegate {
                 .child(
                     div()
                         .child(
-                            Progress::new(("progress-bar", row_ix))
-                                .value(parse_pct(&row.progress) as f32),
+                            Progress::new(("progress-bar", row_ix)).value(row.progress_raw as f32),
                         )
                         .min_w(px(70.)),
                 )
                 .child(div().child(row.progress.clone())),
             "peers" => div().child(row.peers.clone()),
             "down" => div().child(row.down_speed.clone()),
+            "downloaded" => div().child(row.downloaded.clone()),
             "up" => div().child(row.up_speed.clone()),
+            "uploaded" => div().child(row.uploaded.clone()),
+            "eta" => div().child(row.eta.clone()),
             _ => div(),
         }
     }

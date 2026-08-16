@@ -660,11 +660,11 @@ impl PeerTableDelegate {
                 Column::new("address", "Address").width(180.).sortable(),
                 Column::new("state", "State").width(80.).sortable(),
                 Column::new("client", "Client").width(150.).sortable(),
-                Column::new("conn", "Connection").width(80.).sortable(),
+                Column::new("conn", "Connection").width(120.).sortable(),
                 Column::new("downloaded", "Downloaded")
-                    .width(100.)
+                    .width(120.)
                     .sortable(),
-                Column::new("uploaded", "Uploaded").width(100.).sortable(),
+                Column::new("uploaded", "Uploaded").width(120.).sortable(),
             ],
             // Default sort by address (ascending) so peers are stable/grouped.
             sort_col_ix: Some(0),

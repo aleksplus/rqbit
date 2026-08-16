@@ -53,28 +53,6 @@ pub fn format_speed(mbps: f64) -> String {
     format_binary(mbps * MIB, "/s", 1, ["G", "G", "M", "K"])
 }
 
-/// Parse a human-readable speed string (e.g. `"1.2 MB/s"`, `"N/A"`) into a
-/// comparable bytes-per-second value for sorting.
-pub fn parse_speed(s: &str) -> f64 {
-    let s = s.trim();
-    if s == "N/A" {
-        return 0.0;
-    }
-    // Try the longest suffix first so e.g. "MB/s" is not shadowed by "B/s".
-    let candidates = [("GB/s", GIB), ("MB/s", MIB), ("KB/s", KIB), ("B/s", 1.0)];
-    for (suffix, mult) in candidates {
-        if let Some(v) = s.strip_suffix(suffix) {
-            return v.trim().parse::<f64>().unwrap_or(0.0) * mult;
-        }
-    }
-    0.0
-}
-
-/// Parse a percentage string like `"42.1%"` into a float for sorting.
-pub fn parse_pct(s: &str) -> f64 {
-    s.trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0)
-}
-
 /// Format a duration in seconds as a compact human-readable uptime string.
 pub fn format_uptime(seconds: u64) -> String {
     let days = seconds / 86400;
