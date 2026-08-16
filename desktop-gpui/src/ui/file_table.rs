@@ -1,6 +1,8 @@
 use gpui::*;
 use gpui_component::{
     checkbox::Checkbox,
+    h_flex,
+    progress::Progress,
     table::{Column, ColumnSort, TableDelegate, TableState},
 };
 use std::sync::Arc;
@@ -14,6 +16,8 @@ pub struct FileRow {
     pub included: bool,
     /// Whether the file already exists on disk at the destination folder.
     pub exists: bool,
+    /// Bytes downloaded for this file so far (0 when unknown/not started).
+    pub progress: u64,
 }
 
 /// Reusable table delegate for selecting which files of a torrent to download.
@@ -29,6 +33,10 @@ pub struct FileTableDelegate {
     table: WeakEntity<TableState<FileTableDelegate>>,
     pub on_toggle: Option<Arc<dyn Fn(usize, bool, &mut App) + Send + Sync>>,
     pub on_toggle_all: Option<Arc<dyn Fn(bool, &mut App) + Send + Sync>>,
+    /// Whether to show the per-file Progress column. Only enabled in the
+    /// torrent detail panel (where live stats are available); the add-torrent
+    /// dialog leaves this off.
+    show_progress: bool,
     /// Currently active sort column index (None = no active sort).
     sort_col_ix: Option<usize>,
     /// Currently active sort direction.
@@ -42,6 +50,7 @@ impl FileTableDelegate {
             table: WeakEntity::new_invalid(),
             on_toggle: None,
             on_toggle_all: None,
+            show_progress: false,
             columns: vec![
                 Column::new("included", "Included")
                     .width(35.)
@@ -54,6 +63,17 @@ impl FileTableDelegate {
             sort_col_ix: Some(1),
             sort_dir: ColumnSort::Ascending,
         }
+    }
+
+    /// Enable the per-file Progress column. Call before the table is first
+    /// rendered so the column list is stable.
+    pub fn show_progress(&mut self) {
+        if self.show_progress {
+            return;
+        }
+        self.show_progress = true;
+        self.columns
+            .push(Column::new("progress", "Progress").width(140.).sortable());
     }
 
     /// Apply the currently persisted sort (`sort_col_ix` / `sort_dir`) to
@@ -72,6 +92,7 @@ impl FileTableDelegate {
             match key.as_str() {
                 "name" => a.name.cmp(&b.name),
                 "size" => a.length.cmp(&b.length),
+                "progress" => a.progress.cmp(&b.progress),
                 _ => std::cmp::Ordering::Equal,
             }
         };
@@ -170,6 +191,23 @@ impl TableDelegate for FileTableDelegate {
             "size" => div()
                 .child(crate::ui::utils::format_bytes(row.length))
                 .into_any_element(),
+            "progress" => {
+                let pct = if row.length > 0 {
+                    (row.progress as f64 / row.length as f64).clamp(0.0, 1.0) * 100.0
+                } else {
+                    0.0
+                };
+                h_flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .child(Progress::new(("file-progress-bar", row_ix)).value(pct as f32))
+                            .min_w(px(70.)),
+                    )
+                    .child(div().child(format!("{:.1}%", pct)))
+                    .into_any_element()
+            }
             "included" => {
                 let new_included = !row.included;
                 let table = self.table.clone();

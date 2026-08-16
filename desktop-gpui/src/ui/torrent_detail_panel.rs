@@ -70,6 +70,7 @@ impl TorrentDetailPanel {
         let panel_weak = cx.entity().downgrade();
         let file_table_state = cx.new(|cx| {
             let mut delegate = FileTableDelegate::new();
+            delegate.show_progress();
             delegate.set_table(cx.entity().downgrade());
             delegate.on_toggle = Some(Arc::new({
                 let panel = panel_weak.clone();
@@ -166,6 +167,11 @@ impl TorrentDetailPanel {
 
             let _ = this.update(cx, |this, cx| {
                 if let Ok(d) = &details {
+                    let file_progress = stats
+                        .as_ref()
+                        .ok()
+                        .map(|s| s.file_progress.clone())
+                        .unwrap_or_default();
                     let files: Vec<FileRow> = d
                         .files
                         .as_ref()
@@ -178,6 +184,7 @@ impl TorrentDetailPanel {
                                     length: file.length,
                                     included: file.included,
                                     exists: false,
+                                    progress: file_progress.get(idx).copied().unwrap_or(0),
                                 })
                                 .collect()
                         })
@@ -264,6 +271,17 @@ impl TorrentDetailPanel {
                         });
                     }
                     if let Ok(s) = stats {
+                        // Update per-file progress bars from the latest stats.
+                        let file_progress = s.file_progress.clone();
+                        let _ = this.file_table_state.update(cx, |state, cx| {
+                            let delegate = state.delegate_mut();
+                            for row in delegate.rows.iter_mut() {
+                                row.progress =
+                                    file_progress.get(row.file_index).copied().unwrap_or(0);
+                            }
+                            delegate.apply_sort();
+                            cx.notify();
+                        });
                         this.stats = Some(s);
                     }
                     this.peer_stats = peer_stats.ok();

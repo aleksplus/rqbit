@@ -172,6 +172,7 @@ pub async fn build_entry(
                 length: f.length,
                 included: true,
                 exists,
+                progress: 0,
             }
         })
         .collect();
