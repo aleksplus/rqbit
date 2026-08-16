@@ -19,7 +19,6 @@ use librqbit::AddTorrentOptions;
 use librqbit::api::ApiTorrentListOpts;
 use librqbit::session_stats::snapshot::SessionStatsSnapshot;
 use std::collections::HashSet;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,10 +26,14 @@ use crate::state::State;
 use crate::ui::add_torrent_dialog::{
     AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry, AddTorrentSource,
 };
-use crate::ui::file_table::FileRow;
+
+use crate::ui::dialogs::{DeleteDialog, DeleteDialogEvent, MagnetDialog, MagnetDialogEvent};
 use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
-use crate::ui::utils::{format_bytes, format_speed, parse_speed};
+use crate::ui::utils::{
+    build_entry, format_bytes, format_speed, format_uptime, parse_pct, parse_speed,
+    render_modal_overlay, torrent_action_menu_item,
+};
 
 /// Simplified torrent row data that implements Clone.
 #[derive(Clone)]
@@ -76,7 +79,7 @@ pub struct MainPanel {
 
 /// Pause/start actions that can be applied to selected torrents.
 #[derive(Clone, Copy)]
-enum TorrentAction {
+pub enum TorrentAction {
     Pause,
     Start,
 }
@@ -1033,89 +1036,6 @@ impl TableDelegate for TorrentTableDelegate {
     }
 }
 
-/// Parse a percentage string like `"42.1%"` into a float for sorting.
-fn parse_pct(s: &str) -> f64 {
-    s.trim_end_matches('%').trim().parse::<f64>().unwrap_or(0.0)
-}
-
-/// Format a duration in seconds as a compact human-readable uptime string.
-fn format_uptime(seconds: u64) -> String {
-    let days = seconds / 86400;
-    let hours = (seconds % 86400) / 3600;
-    let minutes = (seconds % 3600) / 60;
-    let secs = seconds % 60;
-    if days > 0 {
-        format!("{days}d {hours}h {minutes}m")
-    } else if hours > 0 {
-        format!("{hours}h {minutes}m {secs}s")
-    } else if minutes > 0 {
-        format!("{minutes}m {secs}s")
-    } else {
-        format!("{secs}s")
-    }
-}
-
-/// Build a context-menu item that runs a pause/start action on a torrent.
-fn torrent_action_menu_item(
-    label: String,
-    torrent_id: usize,
-    action: TorrentAction,
-) -> PopupMenuItem {
-    PopupMenuItem::new(label).on_click(move |_, _, cx: &mut App| {
-        let api = cx.global::<State>().api();
-        cx.spawn(async move |_| match action {
-            TorrentAction::Pause => {
-                let _ = api.api_torrent_action_pause(torrent_id.into()).await;
-            }
-            TorrentAction::Start => {
-                let _ = api.api_torrent_action_start(torrent_id.into()).await;
-            }
-        })
-        .detach();
-    })
-}
-
-/// Render a centered modal overlay (dimmed backdrop + panel) for a dialog
-/// entity. Clicking the backdrop invokes `close`. `max_height`, when set, caps
-/// the panel height (used for the file-selection dialog).
-fn render_modal_overlay<E: Render + 'static>(
-    dialog: &Entity<E>,
-    close: fn(&mut MainPanel, &mut Context<MainPanel>),
-    max_height: Option<Pixels>,
-    cx: &mut Context<MainPanel>,
-) -> impl IntoElement {
-    let theme = cx.theme();
-    let mut panel = v_flex()
-        .absolute()
-        .top(px(80.))
-        .left(px(80.))
-        .right(px(80.))
-        .bg(theme.background)
-        .rounded_md()
-        .border_1()
-        .border_color(theme.border)
-        .shadow_lg()
-        .p_4()
-        .overflow_hidden()
-        .child(dialog.clone())
-        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-    if let Some(h) = max_height {
-        panel = panel.max_h(h);
-    }
-    div()
-        .absolute()
-        .top_0()
-        .left_0()
-        .size_full()
-        .bg(theme.muted)
-        .opacity(0.8)
-        .child(panel)
-        .on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, _, _, cx| close(this, cx)),
-        )
-}
-
 impl Render for MainPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Create pending detail panel now that window is available.
@@ -1355,267 +1275,7 @@ impl MainPanel {
     }
 }
 
-/// Build an [`AddTorrentEntry`] by resolving the torrent's file list via
-/// `list_only`. If the file list can't be resolved (e.g. a magnet that can't
-/// be fetched right now), the entry is created with no files so it will be
-/// added with all files selected.
-async fn build_entry(
-    api: &librqbit::Api,
-    source: AddTorrentSource,
-) -> anyhow::Result<AddTorrentEntry> {
-    let list_opts = AddTorrentOptions {
-        list_only: true,
-        ..Default::default()
-    };
-    let response = api
-        .api_add_torrent(source.to_add(), Some(list_opts))
-        .await?;
-    let name = response
-        .details
-        .name
-        .clone()
-        .unwrap_or_else(|| response.details.info_hash.clone());
-    let output_folder = PathBuf::from(response.output_folder);
-    let files: Vec<FileRow> = response
-        .details
-        .files
-        .unwrap_or_default()
-        .into_iter()
-        .enumerate()
-        .map(|(idx, f)| {
-            // Reconstruct the on-disk path from the output folder and the
-            // torrent's relative file components, then check if it exists.
-            let mut full_path = output_folder.clone();
-            for component in &f.components {
-                full_path.push(component);
-            }
-            let exists = !f.attributes.padding && full_path.exists();
-            FileRow {
-                file_index: idx,
-                name: f.name,
-                length: f.length,
-                included: true,
-                exists,
-            }
-        })
-        .collect();
-    Ok(AddTorrentEntry {
-        source,
-        name,
-        files,
-    })
-}
-
 impl Focusable for MainPanel {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-// ── Delete Dialog ──────────────────────────────────────────────────────────
-
-/// Events emitted by [`DeleteDialog`].
-#[derive(Clone, Debug)]
-pub enum DeleteDialogEvent {
-    /// User cancelled.
-    Cancelled,
-    /// User confirmed deletion with (ids, delete_files).
-    Confirmed(Vec<usize>, bool),
-}
-
-/// A modal dialog for confirming torrent deletion.
-pub struct DeleteDialog {
-    ids: Vec<usize>,
-    names: Vec<String>,
-    is_bulk: bool,
-    delete_files: bool,
-    focus_handle: FocusHandle,
-}
-
-impl EventEmitter<DeleteDialogEvent> for DeleteDialog {}
-
-impl DeleteDialog {
-    pub fn new(
-        ids: Vec<usize>,
-        names: Vec<String>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        Self {
-            is_bulk: ids.len() > 1,
-            ids,
-            names,
-            delete_files: true,
-            focus_handle: cx.focus_handle(),
-        }
-    }
-
-    fn on_cancel(&mut self, cx: &mut Context<Self>) {
-        cx.emit(DeleteDialogEvent::Cancelled);
-    }
-
-    fn on_confirm(&mut self, cx: &mut Context<Self>) {
-        cx.emit(DeleteDialogEvent::Confirmed(
-            self.ids.clone(),
-            self.delete_files,
-        ));
-    }
-}
-
-impl Render for DeleteDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-
-        v_flex()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child(if self.is_bulk {
-                        format!("Delete {} torrents", self.ids.len())
-                    } else {
-                        "Delete torrent".to_string()
-                    }),
-            )
-            .child(div().child(if self.is_bulk {
-                "Are you sure you want to delete the following torrents?"
-            } else {
-                "Are you sure you want to delete this torrent?"
-            }))
-            .child(
-                div()
-                    .rounded_md()
-                    .bg(theme.muted)
-                    .p_3()
-                    .max_h(px(200.))
-                    .overflow_y_hidden()
-                    .children(
-                        self.names
-                            .iter()
-                            .map(|name| div().text_color(theme.foreground).child(name.clone())),
-                    ),
-            )
-            .child(
-                Checkbox::new("delete-files")
-                    .checked(self.delete_files)
-                    .label("Also delete downloaded files")
-                    .on_click(
-                        cx.listener(|this: &mut DeleteDialog, checked: &bool, _, _| {
-                            this.delete_files = *checked;
-                        }),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        Button::new("del-cancel")
-                            .outline()
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_cancel(cx))),
-                    )
-                    .child(
-                        Button::new("del-ok")
-                            .danger()
-                            .label(if self.is_bulk {
-                                format!("Delete {} Torrents", self.ids.len())
-                            } else {
-                                "Delete Torrent".to_string()
-                            })
-                            .on_click(cx.listener(|this, _, _, cx| this.on_confirm(cx))),
-                    ),
-            )
-    }
-}
-
-impl Focusable for DeleteDialog {
-    fn focus_handle(&self, _: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-// ── Magnet Dialog ───────────────────────────────────────────────────────────
-
-/// Events emitted by [`MagnetDialog`].
-#[derive(Clone, Debug)]
-pub enum MagnetDialogEvent {
-    /// User clicked **Cancel**.
-    Cancelled,
-    /// User clicked **Add** and provided a magnet URL.
-    Submitted(String),
-}
-
-/// A small dialog for entering a magnet link URL.
-pub struct MagnetDialog {
-    input_state: Entity<InputState>,
-    focus_handle: FocusHandle,
-}
-
-impl EventEmitter<MagnetDialogEvent> for MagnetDialog {}
-
-impl MagnetDialog {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self {
-            input_state: cx
-                .new(|cx| InputState::new(window, cx).placeholder("magnet:?xt=urn:btih:...")),
-            focus_handle: cx.focus_handle(),
-        }
-    }
-
-    fn on_cancel(&mut self, cx: &mut Context<Self>) {
-        cx.emit(MagnetDialogEvent::Cancelled);
-    }
-
-    fn on_submit(&mut self, cx: &mut Context<Self>) {
-        let value = self.input_state.read(cx).value().to_string();
-        if !value.trim().is_empty() {
-            cx.emit(MagnetDialogEvent::Submitted(value.trim().to_string()));
-        }
-    }
-}
-
-impl Render for MagnetDialog {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-
-        v_flex()
-            .gap_3()
-            .child(
-                div()
-                    .text_size(px(16.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Add Magnet Link"),
-            )
-            .child(Input::new(&self.input_state))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        Button::new("magnet-cancel")
-                            .outline()
-                            .label("Cancel")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_cancel(cx))),
-                    )
-                    .child(
-                        Button::new("magnet-add")
-                            .primary()
-                            .label("Add")
-                            .on_click(cx.listener(|this, _, _, cx| this.on_submit(cx))),
-                    ),
-            )
-            .child(
-                div()
-                    .text_size(px(12.))
-                    .text_color(theme.muted_foreground)
-                    .child("Tip: paste a magnet link or a 40-char info hash."),
-            )
-    }
-}
-
-impl Focusable for MagnetDialog {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }

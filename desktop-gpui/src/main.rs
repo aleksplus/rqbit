@@ -67,16 +67,15 @@ async fn main() {
         // frame.
         let quit_countdown: Arc<Mutex<Option<Task<()>>>> = Arc::new(Mutex::new(None));
 
-        let window = cx
-            .open_window(window_options, |window, cx| {
-                let main_panel = cx.new(|cx| MainPanel::new(window, cx));
-                let root_view = cx.new(|_cx| HoldToQuitView {
-                    main_panel,
-                    quit_countdown: quit_countdown.clone(),
-                });
-                cx.new(|cx| gpui_component::Root::new(root_view, window, cx))
-            })
-            .expect("Failed to open window");
+        cx.open_window(window_options, |window, cx| {
+            let main_panel = cx.new(|cx| MainPanel::new(window, cx));
+            let root_view = cx.new(|_cx| HoldToQuitView {
+                main_panel,
+                quit_countdown: quit_countdown.clone(),
+            });
+            cx.new(|cx| gpui_component::Root::new(root_view, window, cx))
+        })
+        .expect("Failed to open window");
 
         // Quit the app when the window is closed (native close button).
         cx.on_window_closed(move |cx: &mut App, _window_id| {

@@ -2,7 +2,7 @@ use crate::ui::main_panel::MainPanel;
 use gpui::*;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{info, warn};
+use tracing::{info};
 
 /// Root view that wraps the main panel and implements "hold-to-quit":
 /// keep cmd-q / ctrl-c held for 1 second to exit. Releasing either the key or
