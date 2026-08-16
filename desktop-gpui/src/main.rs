@@ -48,6 +48,15 @@ async fn main() {
 
         gpui_component::init(cx);
 
+        // Apply the persisted theme (light/dark) from the config file.
+        let config = shared_state.config();
+        let theme_mode = config.theme.as_str();
+        if theme_mode == "dark" {
+            gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+        } else {
+            gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
+        }
+
         let window_options = WindowOptions {
             titlebar: Some(TitlebarOptions {
                 title: Some("rqbit".into()),

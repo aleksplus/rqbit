@@ -208,6 +208,10 @@ pub struct RqbitDesktopConfig {
 
     #[serde(default)]
     pub ratelimits: LimitsConfig,
+
+    /// UI theme: "light" or "dark". Defaults to "light".
+    #[serde(default)]
+    pub theme: String,
 }
 
 impl Default for RqbitDesktopConfig {
@@ -226,6 +230,7 @@ impl Default for RqbitDesktopConfig {
             persistence: Default::default(),
             http_api: Default::default(),
             ratelimits: Default::default(),
+            theme: "light".to_string(),
             #[cfg(feature = "disable-upload")]
             disable_upload: false,
         }

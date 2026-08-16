@@ -1,8 +1,7 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{WeakEntity, *};
-use gpui_component::Sizable;
 use gpui_component::{
-    ActiveTheme as _, IconName, Size, StyledExt, TitleBar,
+    IconName, Size, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     h_flex,
@@ -15,6 +14,7 @@ use gpui_component::{
     table::{Column, ColumnSort, DataTable, TableDelegate, TableEvent, TableState},
     v_flex,
 };
+use gpui_component::{Theme, ThemeMode};
 use librqbit::AddTorrentOptions;
 use librqbit::api::ApiTorrentListOpts;
 use librqbit::session_stats::snapshot::SessionStatsSnapshot;
@@ -687,6 +687,32 @@ impl MainPanel {
         self.settings_sidebar = None;
         cx.notify();
     }
+
+    /// Toggle between light and dark theme, persist the choice to the config
+    /// file, and apply it to the active window.
+    fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let is_dark = cx.theme().is_dark();
+        let new_mode = if is_dark {
+            ThemeMode::Light
+        } else {
+            ThemeMode::Dark
+        };
+
+        // Apply the new theme to the window immediately.
+        Theme::change(new_mode, Some(window), cx);
+
+        // Persist the choice to the config file.
+        let mut config = self.state.config();
+        config.theme = new_mode.name().to_string();
+        if let Err(e) = crate::config::write_config(&self.state.config_filename, &config) {
+            eprintln!("Error writing config for theme: {:?}", e);
+        } else {
+            // Update the in-memory shared config so other views see the change.
+            self.state.shared().write().set_config(config);
+        }
+
+        cx.notify();
+    }
 }
 
 /// Table delegate that holds torrent row data.
@@ -1100,11 +1126,24 @@ impl Render for MainPanel {
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.on_settings(window, cx)
                                     })),
+                            )
+                            .child(
+                                Button::new("theme")
+                                    .icon(if cx.theme().is_dark() {
+                                        IconName::Sun
+                                    } else {
+                                        IconName::Moon
+                                    })
+                                    .small()
+                                    .ghost()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_theme(window, cx);
+                                    })),
                             ),
                     )
                     .pr(px(10.)),
             )
-            .child(if let Some(settings) = &self.settings_sidebar {
+            .child(if let Some(_settings) = &self.settings_sidebar {
                 div()
             } else {
                 // Toolbar (extra left padding for macOS traffic lights)
@@ -1214,8 +1253,6 @@ impl Render for MainPanel {
 impl MainPanel {
     /// Render the footer showing session-wide download/upload speed and uptime.
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-
         let (down_speed, up_speed, fetched, uploaded, uptime) = match &self.footer_stats {
             Some(stats) => (
                 stats.download_speed.to_string(),

@@ -1,6 +1,6 @@
 use gpui::*;
 use gpui_component::{
-    ActiveTheme as _, Disableable as _, Sizable as _, Size,
+    ActiveTheme as _, Disableable as _, Sizable as _, Size, Theme, ThemeMode,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -52,8 +52,17 @@ impl SettingsPage {
         cx.emit(SettingsPageEvent::Back);
     }
 
-    fn on_apply(&mut self, cx: &mut Context<Self>) {
+    fn on_apply(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let config = self.config.read().clone();
+
+        // Apply the theme from config immediately so the UI updates without
+        // waiting for the session reconfigure.
+        let theme_mode = if config.theme == "dark" {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        };
+        Theme::change(theme_mode, Some(_window), cx);
 
         if let Err(e) = write_config(&self.state.config_filename, &config) {
             eprintln!("Error writing config: {:?}", e);
@@ -381,6 +390,17 @@ fn set_upnp_name(c: &mut RqbitDesktopConfig, v: SharedString) {
     c.upnp.server_friendly_name = if s.is_empty() { None } else { Some(s) };
 }
 
+fn get_theme_dark(c: &RqbitDesktopConfig) -> bool {
+    c.theme == "dark"
+}
+fn set_theme_dark(c: &mut RqbitDesktopConfig, v: bool) {
+    c.theme = if v {
+        "dark".to_string()
+    } else {
+        "light".to_string()
+    };
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────
 
 impl Render for SettingsPage {
@@ -416,7 +436,7 @@ impl Render for SettingsPage {
                             Button::new("settings-apply")
                                 .primary()
                                 .label("Apply")
-                                .on_click(cx.listener(|this, _, _, cx| this.on_apply(cx))),
+                                .on_click(cx.listener(|this, _, window, cx| this.on_apply(window, cx))),
                         ),
                     ),
             )
@@ -439,7 +459,16 @@ impl Render for SettingsPage {
                                             SettingField::render(download_location_field(config.clone())),
                                         )
                                         .layout(Axis::Vertical),
-                                    ])),
+                                    ]))
+                                    .group(
+                                        SettingGroup::new().title("Appearance").items(vec![
+                                            SettingItem::new(
+                                                "Dark theme",
+                                                switch_field(config.clone(), get_theme_dark, set_theme_dark),
+                                            )
+                                            .description("Use a dark color scheme for the application UI."),
+                                        ]),
+                                    ),
                                 // ── DHT ──
                                 SettingPage::new("DHT").group(
                                     SettingGroup::new().title("DHT Settings").items(vec![

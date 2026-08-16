@@ -568,8 +568,6 @@ impl TorrentDetailPanel {
 
 impl Render for TorrentDetailPanel {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-
         let active_tab = self.active_tab;
 
         v_flex()

@@ -26,6 +26,11 @@ impl SharedState {
     pub fn config(&self) -> RqbitDesktopConfig {
         self.config.clone()
     }
+
+    /// Replace the in-memory config snapshot (does not persist to disk).
+    pub fn set_config(&mut self, config: RqbitDesktopConfig) {
+        self.config = config;
+    }
 }
 
 pub struct State {
@@ -210,7 +215,13 @@ impl State {
         self.shared.read().api()
     }
 
+    /// Return a snapshot of the current config.
+    pub fn config(&self) -> RqbitDesktopConfig {
+        self.shared.read().config()
+    }
+
     pub async fn configure(&self, config: RqbitDesktopConfig) -> Result<(), ApiError> {
+        // Quick check under a brief read lock: if nothing changed, bail out.
         {
             let g = self.shared.read();
             if g.config == config {
@@ -219,17 +230,26 @@ impl State {
             }
         }
 
-        let mut existing = self.shared.write();
+        // Grab the old API under a brief read lock, then release it so the UI
+        // thread (which reads `self.shared` every second for stats) is not
+        // blocked while we stop the old session and spin up a new one.
+        let old_api = self.shared.read().api();
 
-        existing.api.session().stop().await;
+        // Stop the old session without holding any lock across the await.
+        old_api.session().stop().await;
 
+        // Build the replacement API without holding any lock across the await.
         let api = api_from_config(&self.init_logging, &config).await?;
         if let Err(e) = write_config(&self.config_filename, &config) {
             error!("error writing config: {:#}", e);
         }
 
-        existing.config = config;
-        existing.api = Arc::new(api);
+        // Swap in the new config + API under a brief write lock.
+        {
+            let mut existing = self.shared.write();
+            existing.config = config;
+            existing.api = Arc::new(api);
+        }
         Ok(())
     }
 }
