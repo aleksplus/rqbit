@@ -99,6 +99,7 @@ impl AddTorrentDialog {
             .unwrap_or_default();
         let _ = self.table_state.update(cx, |state, cx| {
             state.delegate_mut().rows = files;
+            state.delegate_mut().apply_sort();
             cx.notify();
         });
         cx.notify();
