@@ -164,23 +164,20 @@ impl MainPanel {
         // Open/update detail panel when a row is selected in the table.
         cx.subscribe(
             &table_state,
-            |this, table, event: &TableEvent, cx| match event {
-                TableEvent::SelectRow(row_ix) => {
-                    let torrent_id = table.read(cx).delegate().rows.get(*row_ix).map(|r| r.id);
-                    if let Some(id) = torrent_id {
-                        if let Some(panel) = &this.detail_panel {
-                            // Update existing panel to show the newly selected torrent.
-                            let _ = panel.update(cx, |panel, cx| {
-                                panel.switch_torrent(id, cx);
-                            });
-                        } else {
-                            // Mark that we need to create a panel; defer to render where window is available.
-                            this.pending_detail_id = Some(id);
-                            cx.notify();
-                        }
+            |this, table, event: &TableEvent, cx| if let TableEvent::SelectRow(row_ix) = event {
+                let torrent_id = table.read(cx).delegate().rows.get(*row_ix).map(|r| r.id);
+                if let Some(id) = torrent_id {
+                    if let Some(panel) = &this.detail_panel {
+                        // Update existing panel to show the newly selected torrent.
+                        panel.update(cx, |panel, cx| {
+                            panel.switch_torrent(id, cx);
+                        });
+                    } else {
+                        // Mark that we need to create a panel; defer to render where window is available.
+                        this.pending_detail_id = Some(id);
+                        cx.notify();
                     }
                 }
-                _ => {}
             },
         )
         .detach();
@@ -198,7 +195,7 @@ impl MainPanel {
                 if let Some(panel) = &this.detail_panel {
                     let selected_ids = this.selected_torrent_ids(cx);
                     if let Some(torrent_id) = selected_ids.first().copied() {
-                        let _ = panel.update(cx, |panel, cx| {
+                        panel.update(cx, |panel, cx| {
                             panel.switch_torrent(torrent_id, cx);
                         });
                     }
@@ -331,8 +328,8 @@ impl MainPanel {
                                 (
                                     format!(
                                         "{}/{}",
-                                        peers_raw.to_string(),
-                                        live.snapshot.peer_stats.seen.to_string(),
+                                        peers_raw,
+                                        live.snapshot.peer_stats.seen,
                                     ),
                                     peers_raw,
                                     format_speed(live.download_speed.mbps),
@@ -417,7 +414,7 @@ impl MainPanel {
                 })
                 .collect();
 
-            let _ = table_state.update(cx, |state, cx| {
+            table_state.update(cx, |state, cx| {
                 // Preserve selected torrent IDs across refresh by matching after update.
                 let prev_selected_ids: HashSet<usize> = state
                     .delegate()
@@ -512,7 +509,7 @@ impl MainPanel {
                     }
                 }
             }
-            let _ = table_state.update(cx, |state, cx| {
+            table_state.update(cx, |state, cx| {
                 state.delegate_mut().selected_rows.clear();
                 cx.notify();
             });
@@ -591,7 +588,7 @@ impl MainPanel {
                     let _ = api.api_torrent_action_forget((*id).into()).await;
                 }
             }
-            let _ = table_state.update(cx, |state, cx| {
+            table_state.update(cx, |state, cx| {
                 state.delegate_mut().selected_rows.clear();
                 cx.notify();
             });
@@ -764,7 +761,7 @@ impl MainPanel {
 
     fn close_details(&mut self, cx: &mut Context<Self>) {
         // Deselect the table row so the detail panel stays hidden.
-        let _ = self.table_state.update(cx, |state, cx| {
+        self.table_state.update(cx, |state, cx| {
             state.delegate_mut().selected_rows.clear();
             state.clear_selection(cx);
             cx.notify();

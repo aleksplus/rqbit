@@ -189,7 +189,7 @@ impl TorrentDetailPanel {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    let _ = file_table_state.update(cx, |state, cx| {
+                    file_table_state.update(cx, |state, cx| {
                         let delegate = state.delegate_mut();
                         delegate.rows = files;
                         delegate.apply_sort();
@@ -210,7 +210,7 @@ impl TorrentDetailPanel {
                             uploaded: p.counters.uploaded_bytes,
                         })
                         .collect();
-                    let _ = peer_table_state.update(cx, |state, cx| {
+                    peer_table_state.update(cx, |state, cx| {
                         let delegate = state.delegate_mut();
                         delegate.rows = peer_rows;
                         delegate.apply_sort();
@@ -263,7 +263,7 @@ impl TorrentDetailPanel {
                                 uploaded: p.counters.uploaded_bytes,
                             })
                             .collect();
-                        let _ = this.peer_table_state.update(cx, |state, cx| {
+                        this.peer_table_state.update(cx, |state, cx| {
                             let delegate = state.delegate_mut();
                             delegate.rows = peer_rows;
                             delegate.apply_sort();
@@ -273,7 +273,7 @@ impl TorrentDetailPanel {
                     if let Ok(s) = stats {
                         // Update per-file progress bars from the latest stats.
                         let file_progress = s.file_progress.clone();
-                        let _ = this.file_table_state.update(cx, |state, cx| {
+                        this.file_table_state.update(cx, |state, cx| {
                             let delegate = state.delegate_mut();
                             for row in delegate.rows.iter_mut() {
                                 row.progress =
@@ -311,7 +311,7 @@ impl TorrentDetailPanel {
     /// Toggle inclusion of a file and persist it via the API.
     fn set_file_included(&mut self, file_index: usize, included: bool, cx: &mut Context<Self>) {
         // Update the local row immediately for responsive UI.
-        let _ = self.file_table_state.update(cx, |state, cx| {
+        self.file_table_state.update(cx, |state, cx| {
             if let Some(row) = state.delegate_mut().rows.get_mut(file_index) {
                 row.included = included;
             }
@@ -344,7 +344,7 @@ impl TorrentDetailPanel {
     /// Set inclusion state for all files and persist it via the API.
     fn set_all_files_included(&mut self, included: bool, cx: &mut Context<Self>) {
         // Update the local rows immediately for responsive UI.
-        let _ = self.file_table_state.update(cx, |state, cx| {
+        self.file_table_state.update(cx, |state, cx| {
             for row in state.delegate_mut().rows.iter_mut() {
                 row.included = included;
             }
@@ -434,8 +434,7 @@ impl TorrentDetailPanel {
             .map(|live| {
                 let peers = format!(
                     "{}/{}",
-                    live.snapshot.peer_stats.live.to_string(),
-                    live.snapshot.peer_stats.seen.to_string(),
+                    live.snapshot.peer_stats.live, live.snapshot.peer_stats.seen,
                 );
                 let down = format_speed(live.download_speed.mbps);
                 let up = format_speed(live.upload_speed.mbps);

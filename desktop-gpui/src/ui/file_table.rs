@@ -20,6 +20,11 @@ pub struct FileRow {
     pub progress: u64,
 }
 
+/// Callback invoked when a single file's inclusion is toggled.
+pub type OnFileToggle = Arc<dyn Fn(usize, bool, &mut App) + Send + Sync>;
+/// Callback invoked when the "select all" checkbox is toggled.
+pub type OnToggleAll = Arc<dyn Fn(bool, &mut App) + Send + Sync>;
+
 /// Reusable table delegate for selecting which files of a torrent to download.
 ///
 /// It is self-contained: toggling a checkbox mutates its own rows. An optional
@@ -31,8 +36,8 @@ pub struct FileTableDelegate {
     pub rows: Vec<FileRow>,
     columns: Vec<Column>,
     table: WeakEntity<TableState<FileTableDelegate>>,
-    pub on_toggle: Option<Arc<dyn Fn(usize, bool, &mut App) + Send + Sync>>,
-    pub on_toggle_all: Option<Arc<dyn Fn(bool, &mut App) + Send + Sync>>,
+    pub on_toggle: Option<OnFileToggle>,
+    pub on_toggle_all: Option<OnToggleAll>,
     /// Whether to show the per-file Progress column. Only enabled in the
     /// torrent detail panel (where live stats are available); the add-torrent
     /// dialog leaves this off.

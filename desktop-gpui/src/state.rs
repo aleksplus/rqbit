@@ -181,11 +181,7 @@ impl State {
             .expect("to_str()")
             .to_owned();
 
-        let config = if let Ok(cfg) = read_config(&config_filename) {
-            cfg
-        } else {
-            RqbitDesktopConfig::default()
-        };
+        let config = read_config(&config_filename).unwrap_or_default();
 
         let api = api_from_config(&init_logging, &config)
             .await

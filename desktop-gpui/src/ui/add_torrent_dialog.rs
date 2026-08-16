@@ -97,7 +97,7 @@ impl AddTorrentDialog {
             .get(self.current)
             .map(|e| e.files.clone())
             .unwrap_or_default();
-        let _ = self.table_state.update(cx, |state, cx| {
+        self.table_state.update(cx, |state, cx| {
             state.delegate_mut().rows = files;
             state.delegate_mut().apply_sort();
             cx.notify();
@@ -147,15 +147,6 @@ impl AddTorrentDialog {
             // `remove` shifted the next entry into `self.current`.
             self.load_current(cx);
         }
-    }
-
-    fn on_select_all(&mut self, included: bool, cx: &mut Context<Self>) {
-        let _ = self.table_state.update(cx, |state, cx| {
-            for r in state.delegate_mut().rows.iter_mut() {
-                r.included = included;
-            }
-            cx.notify();
-        });
     }
 
     /// Toggle whether existing files should be overwritten when adding.
