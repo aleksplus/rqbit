@@ -414,7 +414,11 @@ impl TorrentDetailPanel {
             .as_ref()
             .and_then(|s| s.live.as_ref())
             .map(|live| {
-                let peers = live.snapshot.peer_stats.live.to_string();
+                let peers = format!(
+                    "{}/{}",
+                    live.snapshot.peer_stats.live.to_string(),
+                    live.snapshot.peer_stats.seen.to_string(),
+                );
                 let down = format_speed(live.download_speed.mbps);
                 let up = format_speed(live.upload_speed.mbps);
                 let eta = live

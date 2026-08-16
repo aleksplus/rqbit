@@ -286,7 +286,11 @@ impl MainPanel {
                             };
                             let (peers, down, up) = if let Some(live) = &stats.live {
                                 (
-                                    live.snapshot.peer_stats.live.to_string(),
+                                    format!(
+                                        "{}/{}",
+                                        live.snapshot.peer_stats.live.to_string(),
+                                        live.snapshot.peer_stats.seen.to_string(),
+                                    ),
                                     format_speed(live.download_speed.mbps),
                                     format_speed(live.upload_speed.mbps),
                                 )
