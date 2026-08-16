@@ -162,9 +162,8 @@ impl MainPanel {
         this.table_state = table_state.clone();
 
         // Open/update detail panel when a row is selected in the table.
-        cx.subscribe(
-            &table_state,
-            |this, table, event: &TableEvent, cx| if let TableEvent::SelectRow(row_ix) = event {
+        cx.subscribe(&table_state, |this, table, event: &TableEvent, cx| {
+            if let TableEvent::SelectRow(row_ix) = event {
                 let torrent_id = table.read(cx).delegate().rows.get(*row_ix).map(|r| r.id);
                 if let Some(id) = torrent_id {
                     if let Some(panel) = &this.detail_panel {
@@ -178,8 +177,8 @@ impl MainPanel {
                         cx.notify();
                     }
                 }
-            },
-        )
+            }
+        })
         .detach();
 
         // Track window activation so we can throttle table refreshes when the
@@ -326,11 +325,7 @@ impl MainPanel {
                             if let Some(live) = &stats.live {
                                 let peers_raw = live.snapshot.peer_stats.live;
                                 (
-                                    format!(
-                                        "{}/{}",
-                                        peers_raw,
-                                        live.snapshot.peer_stats.seen,
-                                    ),
+                                    format!("{}/{}", peers_raw, live.snapshot.peer_stats.seen,),
                                     peers_raw,
                                     format_speed(live.download_speed.mbps),
                                     live.download_speed.as_bytes() as f64,
@@ -1278,21 +1273,30 @@ impl Render for MainPanel {
                             .child(
                                 Button::new("pause")
                                     .label("Pause")
+                                    .icon(IconName::Pause)
                                     .small()
                                     .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
                             )
                             .child(
                                 Button::new("start")
                                     .label("Start")
+                                    .icon(IconName::Play)
                                     .small()
                                     .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
                             )
-                            .child(Button::new("delete").label("Delete").small().on_click(
-                                cx.listener(|this, _, window, cx| this.on_delete(window, cx)),
-                            ))
+                            .child(
+                                Button::new("delete")
+                                    .label("Delete")
+                                    .icon(IconName::CircleX)
+                                    .small()
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.on_delete(window, cx)
+                                    })),
+                            )
                             .child(
                                 Button::new("refresh")
                                     .label("Refresh")
+                                    .icon(IconName::LoaderCircle)
                                     .small()
                                     .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
                             ),
