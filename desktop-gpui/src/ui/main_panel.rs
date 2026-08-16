@@ -1,5 +1,8 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{WeakEntity, *};
+use gpui_component::separator::Separator;
+use gpui_component::status_bar::StatusBar;
+use gpui_component::{ActiveTheme, Sizable};
 use gpui_component::{
     IconName, Size, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
@@ -1252,6 +1255,9 @@ impl Render for MainPanel {
 
 impl MainPanel {
     /// Render the footer showing session-wide download/upload speed and uptime.
+    ///
+    /// Uses the gpui-component [`StatusBar`] with three left-pinned groups
+    /// (download, upload, uptime) separated by vertical dividers.
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (down_speed, up_speed, fetched, uploaded, uptime) = match &self.footer_stats {
             Some(stats) => (
@@ -1270,43 +1276,41 @@ impl MainPanel {
             ),
         };
 
-        h_flex()
-            .flex_shrink_0()
-            .justify_between()
-            .gap_4()
-            .px_3()
-            .py_1()
-            .bg(theme.background)
-            .border_t_1()
-            .border_color(theme.border)
-            .text_sm()
-            .text_color(theme.muted_foreground)
-            .child(
+        StatusBar::new()
+            // ↓ Download speed (and total fetched)
+            .left(
                 h_flex()
+                    .items_center()
                     .gap_1()
-                    .child(div().child("↓ ").font_medium())
+                    .child(div().font_medium().child("↓"))
                     .child(div().child(down_speed))
                     .child(
                         div()
-                            .child(format!("({fetched})"))
-                            .text_color(theme.muted_foreground),
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("({fetched})")),
                     ),
             )
-            .child(
+            .left(Separator::vertical())
+            // ↑ Upload speed (and total uploaded)
+            .left(
                 h_flex()
+                    .items_center()
                     .gap_1()
-                    .child(div().child("↑ ").font_medium())
+                    .child(div().font_medium().child("↑"))
                     .child(div().child(up_speed))
                     .child(
                         div()
-                            .child(format!("({uploaded})"))
-                            .text_color(theme.muted_foreground),
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("({uploaded})")),
                     ),
             )
-            .child(
+            .left(Separator::vertical())
+            // Uptime
+            .right(
                 h_flex()
+                    .items_center()
                     .gap_1()
-                    .child(div().child("up ").font_medium())
+                    .child(div().font_medium().child("up"))
                     .child(div().child(uptime)),
             )
     }
