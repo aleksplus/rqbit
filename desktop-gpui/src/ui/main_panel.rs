@@ -1271,18 +1271,18 @@ impl Render for MainPanel {
                         h_flex()
                             .gap_2()
                             .child(
-                                Button::new("pause")
-                                    .label("Pause")
-                                    .icon(IconName::Pause)
-                                    .small()
-                                    .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
-                            )
-                            .child(
                                 Button::new("start")
                                     .label("Start")
                                     .icon(IconName::Play)
                                     .small()
                                     .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
+                            )
+                            .child(
+                                Button::new("pause")
+                                    .label("Pause")
+                                    .icon(IconName::Pause)
+                                    .small()
+                                    .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
                             )
                             .child(
                                 Button::new("delete")
@@ -1294,11 +1294,15 @@ impl Render for MainPanel {
                                     })),
                             )
                             .child(
-                                Button::new("refresh")
-                                    .label("Refresh")
-                                    .icon(IconName::LoaderCircle)
-                                    .small()
-                                    .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
+                                div().pl_4().child(
+                                    Button::new("refresh")
+                                        .tooltip("Refresh")
+                                        .icon(IconName::LoaderCircle)
+                                        .small()
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.on_refresh(cx)),
+                                        ),
+                                ),
                             ),
                     )
                     .child(h_flex().flex_grow_1().size_full())
