@@ -16,9 +16,11 @@ use gpui_component::{
 };
 use gpui_component::{Theme, ThemeMode};
 use librqbit::AddTorrentOptions;
-use librqbit::api::ApiTorrentListOpts;
+use librqbit::api::{ApiTorrentListOpts, EmptyJsonResponse};
 use librqbit::session_stats::snapshot::SessionStatsSnapshot;
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,6 +35,20 @@ use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEven
 use crate::ui::torrent_table::{TorrentAction, TorrentRow, TorrentTableDelegate};
 use crate::ui::utils::{build_entry, format_bytes, format_uptime, render_modal_overlay};
 
+/// Future returned by a per-torrent API action dispatched by
+/// [`MainPanel::run_action_for_ids`]. All `api_torrent_action_*` methods share
+/// the same output type.
+type TorrentApiActionFuture =
+    Pin<Box<dyn Future<Output = librqbit::api::Result<EmptyJsonResponse>> + Send>>;
+
+/// The modal dialog currently open, if any. At most one dialog can be open at
+/// a time; opening a new one replaces the previous.
+enum ActiveDialog {
+    Magnet(Entity<MagnetDialog>),
+    Delete(Entity<DeleteDialog>),
+    Add(Entity<AddTorrentDialog>),
+}
+
 /// Main panel that displays the list of torrents.
 pub struct MainPanel {
     state: Arc<State>,
@@ -42,9 +58,7 @@ pub struct MainPanel {
     detail_panel: Option<Entity<TorrentDetailPanel>>,
     /// Torrent ID waiting for detail panel creation (deferred until window is available in render).
     pending_detail_id: Option<usize>,
-    magnet_dialog: Option<Entity<MagnetDialog>>,
-    delete_dialog: Option<Entity<DeleteDialog>>,
-    add_dialog: Option<Entity<AddTorrentDialog>>,
+    dialog: Option<ActiveDialog>,
     /// Torrent entries waiting for add-dialog creation (deferred until window is
     /// available in render, mirroring `pending_detail_id`).
     pending_add_entries: Option<Vec<AddTorrentEntry>>,
@@ -81,9 +95,7 @@ impl MainPanel {
             settings_sidebar: None,
             detail_panel: None,
             pending_detail_id: None,
-            magnet_dialog: None,
-            delete_dialog: None,
-            add_dialog: None,
+            dialog: None,
             pending_add_entries: None,
             footer_stats: None,
             search_input: cx
@@ -326,16 +338,39 @@ impl MainPanel {
             return;
         }
         let api = self.state.api();
+        match action {
+            TorrentAction::Pause => self.run_action_for_ids(
+                ids,
+                move |id| {
+                    let api = api.clone();
+                    Box::pin(async move { api.api_torrent_action_pause(id.into()).await })
+                },
+                cx,
+            ),
+            TorrentAction::Start => self.run_action_for_ids(
+                ids,
+                move |id| {
+                    let api = api.clone();
+                    Box::pin(async move { api.api_torrent_action_start(id.into()).await })
+                },
+                cx,
+            ),
+        }
+    }
+
+    /// Run `action` for each torrent ID sequentially, then clear the table
+    /// selection and refresh. Shared by the pause/start and delete/forget
+    /// flows. `action` clones the `Api` handle per call and returns a boxed
+    /// future so each variant can dispatch its own API method.
+    fn run_action_for_ids<F>(&mut self, ids: Vec<usize>, action: F, cx: &mut Context<Self>)
+    where
+        F: Fn(usize) -> TorrentApiActionFuture + Send + 'static,
+    {
         let table_state = self.table_state.clone();
         cx.spawn(async move |_, cx| {
-            for id in &ids {
-                match action {
-                    TorrentAction::Pause => {
-                        let _ = api.api_torrent_action_pause((*id).into()).await;
-                    }
-                    TorrentAction::Start => {
-                        let _ = api.api_torrent_action_start((*id).into()).await;
-                    }
+            for id in ids {
+                if let Err(e) = action(id).await {
+                    eprintln!("Torrent action failed: {:?}", e);
                 }
             }
             table_state.update(cx, |state, cx| {
@@ -385,20 +420,21 @@ impl MainPanel {
         cx.subscribe(
             &dialog,
             |this, _entity, event: &DeleteDialogEvent, cx| match event {
-                DeleteDialogEvent::Cancelled => this.close_delete_dialog(cx),
+                DeleteDialogEvent::Cancelled => this.close_dialog(cx),
                 DeleteDialogEvent::Confirmed(ids, delete_files) => {
-                    this.close_delete_dialog(cx);
+                    this.close_dialog(cx);
                     this.confirm_delete(ids.clone(), *delete_files, cx);
                 }
             },
         )
         .detach();
-        self.delete_dialog = Some(dialog);
+        self.dialog = Some(ActiveDialog::Delete(dialog));
         cx.notify();
     }
 
-    fn close_delete_dialog(&mut self, cx: &mut Context<Self>) {
-        self.delete_dialog = None;
+    /// Close the currently open modal dialog, if any.
+    fn close_dialog(&mut self, cx: &mut Context<Self>) {
+        self.dialog = None;
         cx.notify();
     }
 
@@ -409,22 +445,25 @@ impl MainPanel {
     /// and the files are kept (`api_torrent_action_forget`).
     fn confirm_delete(&mut self, ids: Vec<usize>, delete_files: bool, cx: &mut Context<Self>) {
         let api = self.state.api();
-        let table_state = self.table_state.clone();
-        cx.spawn(async move |_, cx| {
-            for id in &ids {
-                if delete_files {
-                    let _ = api.api_torrent_action_delete((*id).into()).await;
-                } else {
-                    let _ = api.api_torrent_action_forget((*id).into()).await;
-                }
-            }
-            table_state.update(cx, |state, cx| {
-                state.delegate_mut().selected_rows.clear();
-                cx.notify();
-            });
-        })
-        .detach();
-        self.fetch_torrents(cx);
+        if delete_files {
+            self.run_action_for_ids(
+                ids,
+                move |id| {
+                    let api = api.clone();
+                    Box::pin(async move { api.api_torrent_action_delete(id.into()).await })
+                },
+                cx,
+            );
+        } else {
+            self.run_action_for_ids(
+                ids,
+                move |id| {
+                    let api = api.clone();
+                    Box::pin(async move { api.api_torrent_action_forget(id.into()).await })
+                },
+                cx,
+            );
+        }
     }
 
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
@@ -479,15 +518,15 @@ impl MainPanel {
         cx.subscribe(
             &dialog,
             |this, _entity, event: &MagnetDialogEvent, cx| match event {
-                MagnetDialogEvent::Cancelled => this.close_magnet_dialog(cx),
+                MagnetDialogEvent::Cancelled => this.close_dialog(cx),
                 MagnetDialogEvent::Submitted(magnet) => {
-                    this.close_magnet_dialog(cx);
+                    this.close_dialog(cx);
                     this.add_magnet(magnet.clone(), cx);
                 }
             },
         )
         .detach();
-        self.magnet_dialog = Some(dialog);
+        self.dialog = Some(ActiveDialog::Magnet(dialog));
         cx.notify();
     }
 
@@ -505,11 +544,6 @@ impl MainPanel {
             }
         })
         .detach();
-    }
-
-    fn close_magnet_dialog(&mut self, cx: &mut Context<Self>) {
-        self.magnet_dialog = None;
-        cx.notify();
     }
 
     /// Defer creation of the file-selection dialog until `render`, where a
@@ -530,20 +564,15 @@ impl MainPanel {
         cx.subscribe(
             &dialog,
             |this, _entity, event: &AddTorrentDialogEvent, cx| match event {
-                AddTorrentDialogEvent::Cancelled => this.close_add_dialog(cx),
+                AddTorrentDialogEvent::Cancelled => this.close_dialog(cx),
                 AddTorrentDialogEvent::AddOne(source, selection, overwrite) => {
                     this.confirm_add(source.clone(), selection.clone(), *overwrite, cx);
                 }
-                AddTorrentDialogEvent::Finished => this.close_add_dialog(cx),
+                AddTorrentDialogEvent::Finished => this.close_dialog(cx),
             },
         )
         .detach();
-        self.add_dialog = Some(dialog);
-        cx.notify();
-    }
-
-    fn close_add_dialog(&mut self, cx: &mut Context<Self>) {
-        self.add_dialog = None;
+        self.dialog = Some(ActiveDialog::Add(dialog));
         cx.notify();
     }
 
@@ -848,26 +877,22 @@ impl MainPanel {
             })
     }
 
-    /// Render modal overlays for any open dialogs (magnet, delete, add).
+    /// Render the modal overlay for the open dialog (magnet, delete, or add),
+    /// if any.
     fn render_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let mut overlays = Vec::new();
-        if let Some(dialog) = &self.magnet_dialog {
-            overlays.push(
-                render_modal_overlay(dialog, MainPanel::close_magnet_dialog, None, cx)
+        match &self.dialog {
+            Some(ActiveDialog::Magnet(dialog)) => overlays.push(
+                render_modal_overlay(dialog, MainPanel::close_dialog, None, cx).into_any_element(),
+            ),
+            Some(ActiveDialog::Delete(dialog)) => overlays.push(
+                render_modal_overlay(dialog, MainPanel::close_dialog, None, cx).into_any_element(),
+            ),
+            Some(ActiveDialog::Add(dialog)) => overlays.push(
+                render_modal_overlay(dialog, MainPanel::close_dialog, Some(px(600.)), cx)
                     .into_any_element(),
-            );
-        }
-        if let Some(dialog) = &self.delete_dialog {
-            overlays.push(
-                render_modal_overlay(dialog, MainPanel::close_delete_dialog, None, cx)
-                    .into_any_element(),
-            );
-        }
-        if let Some(dialog) = &self.add_dialog {
-            overlays.push(
-                render_modal_overlay(dialog, MainPanel::close_add_dialog, Some(px(600.)), cx)
-                    .into_any_element(),
-            );
+            ),
+            None => {}
         }
         overlays
     }
