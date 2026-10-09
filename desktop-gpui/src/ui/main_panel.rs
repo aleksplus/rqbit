@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::{WeakEntity, *};
 use gpui_component::separator::Separator;
 use gpui_component::status_bar::StatusBar;
@@ -658,194 +659,219 @@ impl Render for MainPanel {
             self.create_add_dialog(entries, _window, cx);
         }
 
-        let theme = cx.theme();
-
         v_flex()
             .size_full()
             .gap_0()
-            .child(
-                // Application title bar (draggable; handles macOS traffic-light padding).
-                TitleBar::new()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().text_base().font_semibold().child("Rqbit Desktop"))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child(format!("v{}", librqbit::version())),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                Button::new("add-torrent")
-                                    .label("Add Torrent…")
-                                    .small()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_add_torrent_files(window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("add-magnet")
-                                    .label("Add Magnet…")
-                                    .small()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_add_magnet(window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("settings")
-                                    .icon(IconName::Settings)
-                                    .small()
-                                    .ghost()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_settings(window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("theme")
-                                    .icon(if cx.theme().is_dark() {
-                                        IconName::Sun
-                                    } else {
-                                        IconName::Moon
-                                    })
-                                    .small()
-                                    .ghost()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_theme(window, cx);
-                                    })),
-                            ),
-                    )
-                    .pr(px(10.)),
-            )
-            .child(if let Some(_settings) = &self.settings_sidebar {
-                div()
-            } else {
-                // Toolbar (extra left padding for macOS traffic lights)
-                h_flex()
-                    .gap_2()
-                    .bg(theme.background)
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .pl(px(10.))
-                    .pt(px(5.))
-                    .pr(px(10.))
-                    .pb(px(5.))
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Button::new("start")
-                                    .label("Start")
-                                    .icon(IconName::Play)
-                                    .small()
-                                    .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
-                            )
-                            .child(
-                                Button::new("pause")
-                                    .label("Pause")
-                                    .icon(IconName::Pause)
-                                    .small()
-                                    .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
-                            )
-                            .child(
-                                Button::new("delete")
-                                    .label("Delete")
-                                    .icon(IconName::CircleX)
-                                    .small()
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.on_delete(window, cx)
-                                    })),
-                            )
-                            .child(
-                                div().pl_4().child(
-                                    Button::new("refresh")
-                                        .tooltip("Refresh")
-                                        .icon(IconName::LoaderCircle)
-                                        .small()
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.on_refresh(cx)),
-                                        ),
-                                ),
-                            ),
-                    )
-                    .child(h_flex().flex_grow_1().size_full())
-                    .child(
-                        h_flex()
-                            .gap_2()
-                            .child(
-                                Select::new(&self.status_filter)
-                                    .with_size(Size::Small)
-                                    .placeholder("All statuses")
-                                    .w(px(100.))
-                                    .size_full(),
-                            )
-                            .child(
-                                Input::new(&self.search_input)
-                                    .with_size(Size::Small)
-                                    .cleanable(true)
-                                    .min_w(px(200.))
-                                    .w(px(200.)),
-                            ),
-                    )
+            .child(self.render_title_bar(cx))
+            .when(self.settings_sidebar.is_none(), |this| {
+                this.child(self.render_toolbar(cx))
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .child(if let Some(settings) = &self.settings_sidebar {
-                        // Settings page replaces the main content
-                        div().size_full().child(settings.clone()).into_any_element()
-                    } else {
-                        // Resizable split: torrent table (left) + detail panel (right, conditional)
-                        v_resizable("main-split")
-                            .with_state(&self.resizable_state)
-                            .child(
-                                resizable_panel().child(
-                                    div()
-                                        .size_full()
-                                        .overflow_hidden()
-                                        .border_1()
-                                        .border_color(cx.theme().border)
-                                        .child(DataTable::new(&self.table_state).bordered(false)),
-                                ),
-                            )
-                            .child(
-                                resizable_panel()
-                                    .visible(self.detail_panel.is_some())
-                                    .size(px(400.))
-                                    .size_range(px(250.)..px(800.))
-                                    .child(
-                                        self.detail_panel
-                                            .clone()
-                                            .map(|p| p.into_any_element())
-                                            .unwrap_or_else(|| div().into_any_element()),
-                                    ),
-                            )
-                            .into_any_element()
-                    }),
-            )
-            .children(self.magnet_dialog.as_ref().map(|dialog| {
-                render_modal_overlay(dialog, MainPanel::close_magnet_dialog, None, cx)
-            }))
-            .children(self.delete_dialog.as_ref().map(|dialog| {
-                render_modal_overlay(dialog, MainPanel::close_delete_dialog, None, cx)
-            }))
-            .children(self.add_dialog.as_ref().map(|dialog| {
-                render_modal_overlay(dialog, MainPanel::close_add_dialog, Some(px(600.)), cx)
-            }))
+            .child(self.render_content(cx))
+            .children(self.render_overlays(cx))
             .child(self.render_footer(cx))
     }
 }
 
 impl MainPanel {
+    /// Render the application title bar: app name/version plus the global
+    /// action buttons (add torrent/magnet, settings, theme toggle). Draggable;
+    /// handles macOS traffic-light padding.
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        TitleBar::new()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_base().font_semibold().child("Rqbit Desktop"))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("v{}", librqbit::version())),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Button::new("add-torrent")
+                            .label("Add Torrent…")
+                            .small()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.on_add_torrent_files(window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("add-magnet")
+                            .label("Add Magnet…")
+                            .small()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.on_add_magnet(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("settings")
+                            .icon(IconName::Settings)
+                            .small()
+                            .ghost()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.on_settings(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("theme")
+                            .icon(if cx.theme().is_dark() {
+                                IconName::Sun
+                            } else {
+                                IconName::Moon
+                            })
+                            .small()
+                            .ghost()
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_theme(window, cx);
+                            })),
+                    ),
+            )
+            .pr(px(10.))
+    }
+
+    /// Render the toolbar: selection actions on the left, search box and
+    /// status filter on the right. Extra left padding for macOS traffic lights.
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        h_flex()
+            .gap_2()
+            .bg(theme.background)
+            .border_b_1()
+            .border_color(theme.border)
+            .pl(px(10.))
+            .pt(px(5.))
+            .pr(px(10.))
+            .pb(px(5.))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Button::new("start")
+                            .label("Start")
+                            .icon(IconName::Play)
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| this.on_start(cx))),
+                    )
+                    .child(
+                        Button::new("pause")
+                            .label("Pause")
+                            .icon(IconName::Pause)
+                            .small()
+                            .on_click(cx.listener(|this, _, _, cx| this.on_pause(cx))),
+                    )
+                    .child(
+                        Button::new("delete")
+                            .label("Delete")
+                            .icon(IconName::CircleX)
+                            .small()
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.on_delete(window, cx)),
+                            ),
+                    )
+                    .child(
+                        div().pl_4().child(
+                            Button::new("refresh")
+                                .tooltip("Refresh")
+                                .icon(IconName::LoaderCircle)
+                                .small()
+                                .on_click(cx.listener(|this, _, _, cx| this.on_refresh(cx))),
+                        ),
+                    ),
+            )
+            .child(h_flex().flex_grow_1().size_full())
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        Select::new(&self.status_filter)
+                            .with_size(Size::Small)
+                            .placeholder("All statuses")
+                            .w(px(100.))
+                            .size_full(),
+                    )
+                    .child(
+                        Input::new(&self.search_input)
+                            .with_size(Size::Small)
+                            .cleanable(true)
+                            .min_w(px(200.))
+                            .w(px(200.)),
+                    ),
+            )
+    }
+
+    /// Render the main content area: the settings page when open, otherwise
+    /// the resizable split of torrent table (left) + detail panel (right,
+    /// conditional).
+    fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .flex_1()
+            .min_h_0()
+            .child(if let Some(settings) = &self.settings_sidebar {
+                // Settings page replaces the main content.
+                div().size_full().child(settings.clone()).into_any_element()
+            } else {
+                v_resizable("main-split")
+                    .with_state(&self.resizable_state)
+                    .child(
+                        resizable_panel().child(
+                            div()
+                                .size_full()
+                                .overflow_hidden()
+                                .border_1()
+                                .border_color(cx.theme().border)
+                                .child(DataTable::new(&self.table_state).bordered(false)),
+                        ),
+                    )
+                    .child(
+                        resizable_panel()
+                            .visible(self.detail_panel.is_some())
+                            .size(px(400.))
+                            .size_range(px(250.)..px(800.))
+                            .child(
+                                self.detail_panel
+                                    .clone()
+                                    .map(|p| p.into_any_element())
+                                    .unwrap_or_else(|| div().into_any_element()),
+                            ),
+                    )
+                    .into_any_element()
+            })
+    }
+
+    /// Render modal overlays for any open dialogs (magnet, delete, add).
+    fn render_overlays(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let mut overlays = Vec::new();
+        if let Some(dialog) = &self.magnet_dialog {
+            overlays.push(
+                render_modal_overlay(dialog, MainPanel::close_magnet_dialog, None, cx)
+                    .into_any_element(),
+            );
+        }
+        if let Some(dialog) = &self.delete_dialog {
+            overlays.push(
+                render_modal_overlay(dialog, MainPanel::close_delete_dialog, None, cx)
+                    .into_any_element(),
+            );
+        }
+        if let Some(dialog) = &self.add_dialog {
+            overlays.push(
+                render_modal_overlay(dialog, MainPanel::close_add_dialog, Some(px(600.)), cx)
+                    .into_any_element(),
+            );
+        }
+        overlays
+    }
+
     /// Render the footer showing session-wide download/upload speed and uptime.
     ///
     /// Uses the gpui-component [`StatusBar`] with three left-pinned groups
