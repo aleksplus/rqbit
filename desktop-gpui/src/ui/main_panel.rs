@@ -30,9 +30,7 @@ use crate::ui::dialogs::{DeleteDialog, DeleteDialogEvent, MagnetDialog, MagnetDi
 use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
 use crate::ui::torrent_table::{TorrentAction, TorrentRow, TorrentTableDelegate};
-use crate::ui::utils::{
-    build_entry, format_bytes, format_speed, format_uptime, render_modal_overlay,
-};
+use crate::ui::utils::{build_entry, format_bytes, format_uptime, render_modal_overlay};
 
 /// Main panel that displays the list of torrents.
 pub struct MainPanel {
@@ -240,125 +238,8 @@ impl MainPanel {
             let response = api.api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
             let rows: Vec<TorrentRow> = response
                 .torrents
-                .into_iter()
-                .map(|t| {
-                    let id = t.id.unwrap_or(0);
-                    let name = t.name.clone().unwrap_or_else(|| t.info_hash.clone());
-
-                    let (
-                        state_str,
-                        progress_str,
-                        progress_raw,
-                        peers_str,
-                        peers_raw,
-                        down_str,
-                        down_raw,
-                        up_str,
-                        up_raw,
-                        downloaded_str,
-                        downloaded_raw,
-                        uploaded_str,
-                        uploaded_raw,
-                        eta_str,
-                        eta_raw,
-                    ) = if let Some(stats) = &t.stats {
-                        let st = stats.state.to_string();
-                        let (prog, progress_raw) = if stats.total_bytes > 0 {
-                            let pct =
-                                (stats.progress_bytes as f64 / stats.total_bytes as f64) * 100.0;
-                            (format!("{:.1}%", pct), pct)
-                        } else {
-                            ("0%".to_string(), 0.0)
-                        };
-                        let downloaded_raw = stats.progress_bytes;
-                        let uploaded_raw = stats.uploaded_bytes;
-                        let downloaded = format_bytes(downloaded_raw);
-                        let uploaded = format_bytes(uploaded_raw);
-                        let (peers, peers_raw, down, down_raw, up, up_raw, eta, eta_raw) =
-                            if let Some(live) = &stats.live {
-                                let peers_raw = live.snapshot.peer_stats.live;
-                                (
-                                    format!("{}/{}", peers_raw, live.snapshot.peer_stats.seen,),
-                                    peers_raw,
-                                    format_speed(live.download_speed.mbps),
-                                    live.download_speed.as_bytes() as f64,
-                                    format_speed(live.upload_speed.mbps),
-                                    live.upload_speed.as_bytes() as f64,
-                                    live.time_remaining
-                                        .as_ref()
-                                        .map(|t| t.to_string())
-                                        .unwrap_or_else(|| "—".to_string()),
-                                    live.time_remaining.as_ref().map(|t| t.as_secs()),
-                                )
-                            } else {
-                                (
-                                    "N/A".to_string(),
-                                    0,
-                                    "N/A".to_string(),
-                                    0.0,
-                                    "N/A".to_string(),
-                                    0.0,
-                                    "—".to_string(),
-                                    None,
-                                )
-                            };
-                        (
-                            st,
-                            prog,
-                            progress_raw,
-                            peers,
-                            peers_raw,
-                            down,
-                            down_raw,
-                            up,
-                            up_raw,
-                            downloaded,
-                            downloaded_raw,
-                            uploaded,
-                            uploaded_raw,
-                            eta,
-                            eta_raw,
-                        )
-                    } else {
-                        (
-                            "Unknown".to_string(),
-                            "N/A".to_string(),
-                            0.0,
-                            "N/A".to_string(),
-                            0,
-                            "N/A".to_string(),
-                            0.0,
-                            "N/A".to_string(),
-                            0.0,
-                            "N/A".to_string(),
-                            0,
-                            "N/A".to_string(),
-                            0,
-                            "—".to_string(),
-                            None,
-                        )
-                    };
-
-                    TorrentRow {
-                        id,
-                        name,
-                        state: state_str,
-                        progress: progress_str,
-                        progress_raw,
-                        peers: peers_str,
-                        peers_raw,
-                        down_speed: down_str,
-                        down_speed_raw: down_raw,
-                        up_speed: up_str,
-                        up_speed_raw: up_raw,
-                        downloaded: downloaded_str,
-                        downloaded_raw,
-                        uploaded: uploaded_str,
-                        uploaded_raw,
-                        eta: eta_str,
-                        eta_raw,
-                    }
-                })
+                .iter()
+                .map(TorrentRow::from_listed)
                 .collect();
 
             table_state.update(cx, |state, cx| {

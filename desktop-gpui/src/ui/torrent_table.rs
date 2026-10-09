@@ -4,11 +4,12 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_component::{checkbox::Checkbox, h_flex, menu::PopupMenuItem, progress::Progress};
+use librqbit::api::TorrentDetailsResponse;
 use std::collections::HashSet;
 
 use crate::State;
 use crate::ui::main_panel::MainPanel;
-use crate::ui::utils::torrent_action_menu_item;
+use crate::ui::utils::{format_bytes, format_speed, torrent_action_menu_item};
 
 /// Pause/start actions that can be applied to selected torrents.
 #[derive(Clone, Copy)]
@@ -49,6 +50,69 @@ pub struct TorrentRow {
     pub eta: String,
     /// ETA in seconds; `None` means unknown / not applicable (sorts last).
     pub eta_raw: Option<u64>,
+}
+
+impl TorrentRow {
+    /// Build a display row from a torrent-list API entry.
+    ///
+    /// Data is tiered: `id`/`name` are always present, size and progress fields
+    /// need `stats`, and peer/speed/ETA fields additionally need live stats.
+    /// Fields whose tier is missing get placeholder display strings ("N/A",
+    /// "—", "Unknown") with zeroed/`None` raw values so sorting still behaves
+    /// sensibly.
+    pub fn from_listed(t: &TorrentDetailsResponse) -> Self {
+        let stats = t.stats.as_ref();
+        let live = stats.and_then(|s| s.live.as_ref());
+
+        // Progress percentage; a torrent with unknown total size counts as 0%.
+        let progress_raw = stats.map_or(0.0, |s| {
+            if s.total_bytes > 0 {
+                s.progress_bytes as f64 / s.total_bytes as f64 * 100.0
+            } else {
+                0.0
+            }
+        });
+
+        Self {
+            id: t.id.unwrap_or(0),
+            name: t.name.clone().unwrap_or_else(|| t.info_hash.clone()),
+            state: stats.map_or_else(|| "Unknown".into(), |s| s.state.to_string()),
+            progress: match stats {
+                Some(s) if s.total_bytes > 0 => format!("{progress_raw:.1}%"),
+                Some(_) => "0%".to_string(),
+                None => "N/A".to_string(),
+            },
+            progress_raw,
+            peers: live.map_or_else(
+                || "N/A".into(),
+                |l| {
+                    format!(
+                        "{}/{}",
+                        l.snapshot.peer_stats.live, l.snapshot.peer_stats.seen
+                    )
+                },
+            ),
+            peers_raw: live.map_or(0, |l| l.snapshot.peer_stats.live),
+            down_speed: live.map_or_else(|| "N/A".into(), |l| format_speed(l.download_speed.mbps)),
+            down_speed_raw: live.map_or(0.0, |l| l.download_speed.as_bytes() as f64),
+            up_speed: live.map_or_else(|| "N/A".into(), |l| format_speed(l.upload_speed.mbps)),
+            up_speed_raw: live.map_or(0.0, |l| l.upload_speed.as_bytes() as f64),
+            downloaded: stats.map_or_else(|| "N/A".into(), |s| format_bytes(s.progress_bytes)),
+            downloaded_raw: stats.map_or(0, |s| s.progress_bytes),
+            uploaded: stats.map_or_else(|| "N/A".into(), |s| format_bytes(s.uploaded_bytes)),
+            uploaded_raw: stats.map_or(0, |s| s.uploaded_bytes),
+            eta: live.map_or_else(
+                || "—".into(),
+                |l| {
+                    l.time_remaining
+                        .as_ref()
+                        .map(|t| t.to_string())
+                        .unwrap_or_else(|| "—".to_string())
+                },
+            ),
+            eta_raw: live.and_then(|l| l.time_remaining.as_ref().map(|t| t.as_secs())),
+        }
+    }
 }
 
 /// Table delegate that holds torrent row data.
