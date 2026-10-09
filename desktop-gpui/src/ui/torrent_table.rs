@@ -115,6 +115,16 @@ impl TorrentRow {
     }
 }
 
+/// Active search/status filter stored in the delegate; applied to `all_rows`
+/// to derive the visible `rows`.
+#[derive(Default)]
+struct TorrentFilter {
+    /// Name substring filter, case-insensitive; empty = no search filter.
+    search: String,
+    /// Exact match against the torrent state; empty = all statuses.
+    status: String,
+}
+
 /// Table delegate that holds torrent row data.
 pub struct TorrentTableDelegate {
     /// Full, unfiltered set of rows as last fetched from the API. The visible
@@ -122,6 +132,9 @@ pub struct TorrentTableDelegate {
     pub all_rows: Vec<TorrentRow>,
     pub rows: Vec<TorrentRow>,
     columns: Vec<Column>,
+    /// Currently active search/status filter, pushed in by the panel via
+    /// [`TorrentTableDelegate::set_filter`].
+    filter: TorrentFilter,
     /// Multi-selection state: set of selected row indices.
     pub selected_rows: HashSet<usize>,
     /// The anchor row for shift-click range selection.
@@ -153,6 +166,7 @@ impl TorrentTableDelegate {
                 Column::new("eta", "ETA").width(100.).sortable(),
                 Column::new("peers", "Peers").width(90.).sortable(),
             ],
+            filter: TorrentFilter::default(),
             selected_rows: HashSet::new(),
             anchor_row: None,
             sort_col_ix: None,
@@ -161,13 +175,22 @@ impl TorrentTableDelegate {
         }
     }
 
-    /// Recompute the visible `rows` from `all_rows` by applying the active
-    /// search text (name substring, case-insensitive) and status filter
-    /// (exact match against the torrent's `state`). Called after every data
-    /// refresh and whenever the search box or status dropdown changes, so the
-    /// view stays correct even as torrent statuses update live.
-    pub fn apply_filter(&mut self, search: &str, status: &str) {
-        let needle = search.trim().to_lowercase();
+    /// Store the given search text and status filter, then re-derive the
+    /// visible rows. Called whenever the search box or status dropdown
+    /// changes.
+    pub fn set_filter(&mut self, search: String, status: String) {
+        self.filter = TorrentFilter { search, status };
+        self.apply_filter();
+    }
+
+    /// Recompute the visible `rows` from `all_rows` using the stored filter:
+    /// search text matches the name as a case-insensitive substring, status
+    /// must match the torrent's `state` exactly. Called after every data
+    /// refresh and by [`TorrentTableDelegate::set_filter`], so the view stays
+    /// correct even as torrent statuses update live.
+    pub fn apply_filter(&mut self) {
+        let needle = self.filter.search.trim().to_lowercase();
+        let status = self.filter.status.clone();
         self.rows = self
             .all_rows
             .iter()

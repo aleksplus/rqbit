@@ -225,9 +225,10 @@ impl MainPanel {
         self._stats_task = Some(task);
     }
 
-    /// Re-derive the visible table rows from the current search text and status
-    /// filter. Safe to call on every keystroke / dropdown change; the full
-    /// `all_rows` set is preserved so live status updates are not lost.
+    /// Push the current search text and status filter into the table delegate,
+    /// which re-derives the visible rows. Safe to call on every keystroke /
+    /// dropdown change; the full `all_rows` set is preserved so live status
+    /// updates are not lost.
     fn apply_search_and_filter(&mut self, cx: &mut Context<Self>) {
         let search = self.search_input.read(cx).value().to_string();
         let status = self
@@ -236,9 +237,8 @@ impl MainPanel {
             .selected_value()
             .map(|s| s.to_string())
             .unwrap_or_default();
-        let table_state = self.table_state.clone();
-        table_state.update(cx, |state, cx| {
-            state.delegate_mut().apply_filter(&search, &status);
+        self.table_state.update(cx, |state, cx| {
+            state.delegate_mut().set_filter(search, status);
             cx.notify();
         });
         cx.notify();
@@ -264,23 +264,9 @@ impl MainPanel {
                     .filter_map(|&ix| state.delegate().rows.get(ix).map(|r| r.id))
                     .collect();
                 state.delegate_mut().all_rows = rows;
-                // Derive the visible rows from the full set using the active
-                // search text + status filter, then re-apply the active sort.
-                let (search, status) = this
-                    .upgrade()
-                    .map(|this| {
-                        let search = this.read(cx).search_input.read(cx).value().to_string();
-                        let status = this
-                            .read(cx)
-                            .status_filter
-                            .read(cx)
-                            .selected_value()
-                            .map(|s| s.to_string())
-                            .unwrap_or_default();
-                        (search, status)
-                    })
-                    .unwrap_or_default();
-                state.delegate_mut().apply_filter(&search, &status);
+                // Derive the visible rows from the full set using the filter
+                // stored in the delegate, then re-apply the active sort.
+                state.delegate_mut().apply_filter();
                 // Re-select rows whose torrent IDs match the previous selection.
                 state.delegate_mut().selected_rows = state
                     .delegate()
