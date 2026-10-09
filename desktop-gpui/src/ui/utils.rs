@@ -13,7 +13,8 @@ use crate::State;
 use crate::ui::{
     add_torrent_dialog::{AddTorrentEntry, AddTorrentSource},
     file_table::FileRow,
-    main_panel::{MainPanel, TorrentAction},
+    main_panel::MainPanel,
+    torrent_table::TorrentAction,
 };
 
 /// Binary unit multipliers (powers of 1024), computed once and reused.
