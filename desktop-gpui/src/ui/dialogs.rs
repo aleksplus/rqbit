@@ -1,5 +1,5 @@
 use gpui::{FocusHandle, *};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,

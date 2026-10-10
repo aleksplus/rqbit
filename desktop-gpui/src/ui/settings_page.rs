@@ -1,5 +1,5 @@
 use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, Size, Theme, ThemeMode,
     button::{Button, ButtonVariants},
     h_flex,
@@ -175,13 +175,13 @@ fn download_location_field(
             .child(
                 Input::new(&state.input)
                     .flex_1()
-                    .disabled(options.disabled)
-                    .with_size(options.size),
+                    .disabled(options.is_disabled())
+                    .with_size(options.size()),
             )
             .child(
                 Button::new("browse-download-folder")
                     .label("Browse…")
-                    .disabled(options.disabled)
+                    .disabled(options.is_disabled())
                     .on_click({
                         let cfg = config.clone();
                         move |_, _window, cx| {

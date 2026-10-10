@@ -16,10 +16,11 @@ short_description = "Native desktop for rqbit"
 long_description = """https://github.com/aleksplus/rqbit"""
 
 [dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = ["font-kit"] }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "c36b0c6a" }
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "c36b0c6a" }
+# gpui-kit pins the matching GPUI release (gpui-pre); the aliases below must
+# stay on the same exact versions as gpui-kit or the GPUI types would split.
+gpui-kit = "0.7.1"
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit"] }
 url.workspace = true
 librqbit = { workspace = true, features = [
     "tracing-subscriber-utils",

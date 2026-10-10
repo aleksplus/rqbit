@@ -2,8 +2,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::table::{Column, ColumnSort, TableDelegate, TableState};
-use gpui_component::{checkbox::Checkbox, h_flex, menu::PopupMenuItem, progress::Progress};
+use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
+use gpui_kit::component::{checkbox::Checkbox, h_flex, menu::PopupMenuItem, progress::Progress};
 use librqbit::api::TorrentDetailsResponse;
 use std::collections::HashSet;
 
@@ -441,10 +441,10 @@ impl TableDelegate for TorrentTableDelegate {
     fn context_menu(
         &mut self,
         row_ix: usize,
-        menu: gpui_component::menu::PopupMenu,
+        menu: gpui_kit::component::menu::PopupMenu,
         _window: &mut Window,
         _cx: &mut Context<TableState<Self>>,
-    ) -> gpui_component::menu::PopupMenu {
+    ) -> gpui_kit::component::menu::PopupMenu {
         let Some(row) = self.rows.get(row_ix) else {
             return menu;
         };

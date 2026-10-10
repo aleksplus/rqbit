@@ -6,7 +6,7 @@ use gpui::{
     App, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Render, Styled, div, px,
 };
-use gpui_component::{ActiveTheme, menu::PopupMenuItem, v_flex};
+use gpui_kit::component::{ActiveTheme, menu::PopupMenuItem, v_flex};
 use librqbit::AddTorrentOptions;
 
 use crate::State;

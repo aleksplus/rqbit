@@ -38,7 +38,7 @@ async fn main() {
     info!("GPUI application started – state ready");
 
     // Run GPUI
-    let platform = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let platform = gpui_platform::application().with_assets(gpui_kit::assets::Assets);
     platform.run(move |cx: &mut App| {
         // Store the state globally so all windows/views can access it
         cx.set_global(shared_state.clone());
@@ -46,15 +46,15 @@ async fn main() {
         // Bring the app to the foreground on launch (macOS: activateIgnoringOtherApps).
         cx.activate(true);
 
-        gpui_component::init(cx);
+        gpui_kit::init(cx);
 
         // Apply the persisted theme (light/dark) from the config file.
         let config = shared_state.config();
         let theme_mode = config.theme.as_str();
         if theme_mode == "dark" {
-            gpui_component::Theme::change(gpui_component::ThemeMode::Dark, None, cx);
+            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Dark, None, cx);
         } else {
-            gpui_component::Theme::change(gpui_component::ThemeMode::Light, None, cx);
+            gpui_kit::component::Theme::change(gpui_kit::component::ThemeMode::Light, None, cx);
         }
 
         let window_options = WindowOptions {
@@ -76,13 +76,12 @@ async fn main() {
         // frame.
         let quit_countdown: Arc<Mutex<Option<Task<()>>>> = Arc::new(Mutex::new(None));
 
-        cx.open_window(window_options, |window, cx| {
+        gpui_kit::open_window(window_options, cx, |window, cx| {
             let main_panel = cx.new(|cx| MainPanel::new(window, cx));
-            let root_view = cx.new(|_cx| HoldToQuitView {
+            cx.new(|_cx| HoldToQuitView {
                 main_panel,
                 quit_countdown: quit_countdown.clone(),
-            });
-            cx.new(|cx| gpui_component::Root::new(root_view, window, cx))
+            })
         })
         .expect("Failed to open window");
 

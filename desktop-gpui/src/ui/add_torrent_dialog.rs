@@ -1,6 +1,6 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,

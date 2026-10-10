@@ -1,5 +1,5 @@
 use gpui::*;
-use gpui_component::{
+use gpui_kit::component::{
     checkbox::Checkbox,
     h_flex,
     progress::Progress,

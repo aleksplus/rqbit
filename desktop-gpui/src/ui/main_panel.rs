@@ -1,9 +1,9 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::{WeakEntity, *};
-use gpui_component::separator::Separator;
-use gpui_component::status_bar::StatusBar;
-use gpui_component::{ActiveTheme, Sizable};
-use gpui_component::{
+use gpui_kit::component::separator::Separator;
+use gpui_kit::component::status_bar::StatusBar;
+use gpui_kit::component::{ActiveTheme, Sizable};
+use gpui_kit::component::{
     IconName, Size, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
@@ -14,7 +14,7 @@ use gpui_component::{
     table::{DataTable, TableEvent, TableState},
     v_flex,
 };
-use gpui_component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode};
 use librqbit::AddTorrentOptions;
 use librqbit::api::{ApiTorrentListOpts, EmptyJsonResponse};
 use librqbit::session_stats::snapshot::SessionStatsSnapshot;
