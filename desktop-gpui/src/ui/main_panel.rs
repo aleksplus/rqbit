@@ -24,6 +24,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::hooks::{HookEvent, TorrentAddedPayload, TorrentDeletedPayload, TorrentInfo, envelope};
 use crate::state::State;
 use crate::ui::add_torrent_dialog::{
     AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry, AddTorrentSource,
@@ -47,6 +48,16 @@ enum ActiveDialog {
     Magnet(Entity<MagnetDialog>),
     Delete(Entity<DeleteDialog>),
     Add(Entity<AddTorrentDialog>),
+}
+
+/// Run configured `file_selection` hooks against an entry's resolved file
+/// list and record which ones changed the selection (shown as a hint in the
+/// add dialog). A no-op when no such hooks are enabled.
+async fn apply_file_selection_hooks(state: &Arc<State>, entry: &mut AddTorrentEntry) {
+    let applied = state.hooks().apply_file_selection(entry).await;
+    if !applied.is_empty() {
+        entry.hook_note = Some(applied.join(", "));
+    }
 }
 
 /// Main panel that displays the list of torrents.
@@ -428,28 +439,49 @@ impl MainPanel {
     ///
     /// When `delete_files` is true the downloaded data is removed from disk
     /// (`api_torrent_action_delete`); otherwise only the torrent entry is removed
-    /// and the files are kept (`api_torrent_action_forget`).
+    /// and the files are kept (`api_torrent_action_forget`). A successful
+    /// delete/forget fires the `torrent_deleted` hook.
     fn confirm_delete(&mut self, ids: Vec<usize>, delete_files: bool, cx: &mut Context<Self>) {
         let api = self.state.api();
-        if delete_files {
-            self.run_action_for_ids(
-                ids,
-                move |id| {
-                    let api = api.clone();
-                    Box::pin(async move { api.api_torrent_action_delete(id.into()).await })
-                },
-                cx,
-            );
-        } else {
-            self.run_action_for_ids(
-                ids,
-                move |id| {
-                    let api = api.clone();
-                    Box::pin(async move { api.api_torrent_action_forget(id.into()).await })
-                },
-                cx,
-            );
-        }
+        let hooks = self.state.hooks();
+        self.run_action_for_ids(
+            ids,
+            move |id| {
+                let api = api.clone();
+                let hooks = hooks.clone();
+                Box::pin(async move {
+                    // Resolve details first — the handle is gone after deletion.
+                    let details = api.api_torrent_details(id.into()).ok();
+                    let result = if delete_files {
+                        api.api_torrent_action_delete(id.into()).await
+                    } else {
+                        api.api_torrent_action_forget(id.into()).await
+                    };
+                    if result.is_ok()
+                        && let Some(d) = details
+                    {
+                        hooks.forget(id);
+                        hooks.dispatch(
+                            HookEvent::TorrentDeleted,
+                            envelope(
+                                HookEvent::TorrentDeleted,
+                                TorrentDeletedPayload {
+                                    torrent: TorrentInfo {
+                                        id: Some(id),
+                                        name: d.name,
+                                        info_hash: d.info_hash,
+                                        output_folder: d.output_folder,
+                                    },
+                                    delete_files,
+                                },
+                            ),
+                        );
+                    }
+                    result
+                })
+            },
+            cx,
+        );
     }
 
     fn on_refresh(&mut self, cx: &mut Context<Self>) {
@@ -464,8 +496,9 @@ impl MainPanel {
             prompt: Some("Select .torrent files".into()),
         });
 
-        let api = self.state.api();
+        let state = self.state.clone();
         cx.spawn(async move |this, cx| {
+            let api = state.api();
             match receiver.await {
                 Ok(Ok(Some(paths))) => {
                     let mut entries: Vec<AddTorrentEntry> = Vec::new();
@@ -474,7 +507,10 @@ impl MainPanel {
                             Ok(bytes) => {
                                 let source = AddTorrentSource::Bytes(bytes);
                                 match build_entry(&api, source).await {
-                                    Ok(entry) => entries.push(entry),
+                                    Ok(mut entry) => {
+                                        apply_file_selection_hooks(&state, &mut entry).await;
+                                        entries.push(entry);
+                                    }
                                     Err(e) => {
                                         eprintln!("Error reading torrent {:?}: {:?}", path, e)
                                     }
@@ -517,11 +553,13 @@ impl MainPanel {
     }
 
     fn add_magnet(&mut self, magnet: String, cx: &mut Context<Self>) {
-        let api = self.state.api();
+        let state = self.state.clone();
         cx.spawn(async move |this, cx| {
+            let api = state.api();
             let source = AddTorrentSource::Url(magnet);
             match build_entry(&api, source).await {
-                Ok(entry) => {
+                Ok(mut entry) => {
+                    apply_file_selection_hooks(&state, &mut entry).await;
                     let _ = this.update(cx, |this, cx| {
                         this.open_add_dialog(vec![entry], cx);
                     });
@@ -562,7 +600,10 @@ impl MainPanel {
         cx.notify();
     }
 
-    /// Actually add a torrent, applying the selected file indices (if any).
+    /// Actually add a torrent, applying the selected file indices (if any),
+    /// then fire the `torrent_added` hook (skipped when the torrent was
+    /// already managed by the session — the API response does not
+    /// distinguish that case, so the hook watcher's known-ID set decides).
     fn confirm_add(
         &mut self,
         source: AddTorrentSource,
@@ -571,14 +612,40 @@ impl MainPanel {
         cx: &mut Context<Self>,
     ) {
         let api = self.state.api();
+        let hooks = self.state.hooks();
         cx.spawn(async move |this, cx| {
             let opts = Some(AddTorrentOptions {
-                only_files: selection,
+                only_files: selection.clone(),
                 overwrite,
                 ..Default::default()
             });
-            if let Err(e) = api.api_add_torrent(source.to_add(), opts).await {
-                eprintln!("Error adding torrent: {:?}", e);
+            match api.api_add_torrent(source.to_add(), opts).await {
+                Ok(response) => {
+                    if let Some(id) = response.id
+                        && !hooks.is_known(id)
+                    {
+                        hooks.prime_added(id);
+                        let files = response.details.files.as_deref().unwrap_or(&[]);
+                        hooks.dispatch(
+                            HookEvent::TorrentAdded,
+                            envelope(
+                                HookEvent::TorrentAdded,
+                                TorrentAddedPayload {
+                                    torrent: TorrentInfo {
+                                        id: Some(id),
+                                        name: response.details.name,
+                                        info_hash: response.details.info_hash,
+                                        output_folder: response.output_folder,
+                                    },
+                                    files_total: files.len(),
+                                    files_selected: files.iter().filter(|f| f.included).count(),
+                                    selected_indices: selection,
+                                },
+                            ),
+                        );
+                    }
+                }
+                Err(e) => eprintln!("Error adding torrent: {:?}", e),
             }
             let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
         })

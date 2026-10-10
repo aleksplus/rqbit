@@ -6,6 +6,7 @@ use tracing::{info, warn};
 
 mod config;
 mod events;
+mod hooks;
 mod ui;
 
 mod state;

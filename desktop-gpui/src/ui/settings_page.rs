@@ -2,16 +2,18 @@ use gpui::*;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, Size, Theme, ThemeMode,
     button::{Button, ButtonVariants},
+    checkbox::Checkbox,
     h_flex,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputEvent, InputState, Textarea, TextareaState},
     scroll::ScrollableElement,
     setting::{RenderOptions, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
     v_flex,
 };
-use std::{num::NonZeroU32, sync::Arc};
+use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc};
 
 use crate::{
-    config::{RqbitDesktopConfig, write_config},
+    config::{HookConfig, HttpMethod, RqbitDesktopConfig, write_config},
+    hooks::HookEvent,
     state::State,
 };
 
@@ -401,6 +403,357 @@ fn set_theme_dark(c: &mut RqbitDesktopConfig, v: bool) {
     };
 }
 
+// ── Hooks ──────────────────────────────────────────────────────────────────
+
+/// Read a field of hook `ix`, falling back when the hook was removed while
+/// its fields were still rendered.
+fn with_hook<T>(
+    config: &ConfigArc,
+    ix: usize,
+    get: impl FnOnce(&HookConfig) -> T,
+    default: T,
+) -> T {
+    config
+        .read()
+        .hooks
+        .hooks
+        .get(ix)
+        .map(get)
+        .unwrap_or(default)
+}
+
+/// Mutate hook `ix` if it still exists.
+fn mutate_hook(config: &ConfigArc, ix: usize, f: impl FnOnce(&mut HookConfig)) {
+    if let Some(h) = config.write().hooks.hooks.get_mut(ix) {
+        f(h);
+    }
+}
+
+/// Remove hook `ix`; returns whether it existed.
+fn remove_hook(config: &ConfigArc, ix: usize) -> bool {
+    let mut g = config.write();
+    if ix < g.hooks.hooks.len() {
+        g.hooks.hooks.remove(ix);
+        true
+    } else {
+        false
+    }
+}
+
+/// Append a new hook with a default configuration.
+fn add_hook(config: &ConfigArc) {
+    let mut g = config.write();
+    let n = g.hooks.hooks.len() + 1;
+    g.hooks.hooks.push(HookConfig {
+        name: format!("Hook {n}"),
+        ..Default::default()
+    });
+}
+
+fn hook_switch_field(
+    config: ConfigArc,
+    ix: usize,
+    get: fn(&HookConfig) -> bool,
+    set: fn(&mut HookConfig, bool),
+) -> SettingField<bool> {
+    let cfg_get = config.clone();
+    let cfg_set = config;
+    SettingField::switch(
+        move |_| with_hook(&cfg_get, ix, get, false),
+        move |val, _| mutate_hook(&cfg_set, ix, |h| set(h, val)),
+    )
+}
+
+fn hook_input_field(
+    config: ConfigArc,
+    ix: usize,
+    get: fn(&HookConfig) -> String,
+    set: fn(&mut HookConfig, SharedString),
+) -> SettingField<SharedString> {
+    let cfg_get = config.clone();
+    let cfg_set = config;
+    SettingField::input(
+        move |_| with_hook(&cfg_get, ix, get, String::new()).into(),
+        move |val, _| mutate_hook(&cfg_set, ix, |h| set(h, val)),
+    )
+}
+
+/// POST/GET dropdown for a hook's HTTP method.
+fn hook_method_field(config: ConfigArc, ix: usize) -> SettingField<SharedString> {
+    let cfg_get = config.clone();
+    let cfg_set = config;
+    SettingField::dropdown(
+        vec![("post".into(), "POST".into()), ("get".into(), "GET".into())],
+        move |_| {
+            with_hook(
+                &cfg_get,
+                ix,
+                |h| match h.method {
+                    HttpMethod::Post => "post",
+                    HttpMethod::Get => "get",
+                },
+                "post",
+            )
+            .into()
+        },
+        move |val, _| {
+            mutate_hook(&cfg_set, ix, |h| {
+                h.method = if val == "get" {
+                    HttpMethod::Get
+                } else {
+                    HttpMethod::Post
+                };
+            })
+        },
+    )
+}
+
+/// One row of four checkboxes selecting which events a hook subscribes to.
+fn hook_events_field(
+    config: ConfigArc,
+    ix: usize,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement {
+    move |_options, _window, _cx| {
+        let mut row = h_flex().gap_4().flex_wrap();
+        for event in HookEvent::ALL {
+            let checked = with_hook(&config, ix, |h| h.events.contains(&event), false);
+            let cfg = config.clone();
+            row = row.child(
+                Checkbox::new(SharedString::from(format!(
+                    "hook-{ix}-event-{}",
+                    event.as_str()
+                )))
+                .checked(checked)
+                .label(event.label())
+                .on_click(move |_, _, cx: &mut App| {
+                    let cfg = cfg.clone();
+                    mutate_hook(&cfg, ix, |h| {
+                        if h.events.contains(&event) {
+                            h.events.retain(|e| *e != event);
+                        } else {
+                            h.events.push(event);
+                        }
+                    });
+                    cx.refresh_windows();
+                }),
+            );
+        }
+        row.into_any_element()
+    }
+}
+
+/// Multi-line editor for the hook's extra headers, one `Key: Value` per line.
+fn hook_headers_field(
+    config: ConfigArc,
+    ix: usize,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement {
+    move |_options, window, cx| {
+        let value = with_hook(&config, ix, headers_to_text, String::new());
+        let cfg = config.clone();
+
+        let state_entity =
+            window.use_keyed_state(SharedString::from(format!("hook-{ix}-headers")), cx, {
+                let value = value.clone();
+                move |window, cx| {
+                    let input = cx.new(|cx| {
+                        TextareaState::new(window, cx)
+                            .default_value(value.clone())
+                            .auto_grow(1, 6)
+                    });
+                    let _subscription = cx.subscribe(&input, {
+                        let cfg = cfg.clone();
+                        move |_, input, event: &InputEvent, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                let v = input.read(cx).value();
+                                mutate_hook(&cfg, ix, |h| set_headers_text(h, &v));
+                            }
+                        }
+                    });
+                    HookInputState {
+                        input,
+                        _subscription,
+                    }
+                }
+            });
+
+        // Keep the displayed text in sync when the config changes externally
+        // (e.g. another hook shifting indices after add/remove).
+        state_entity.update(cx, |state, cx| {
+            if state.input.read(cx).value() != value {
+                state.input.update(cx, |input, cx| {
+                    input.set_value(value.clone(), window, cx);
+                });
+            }
+        });
+
+        let state = state_entity.read(cx);
+        div()
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded_md()
+            .p_2()
+            .child(Textarea::new(&state.input))
+            .into_any_element()
+    }
+}
+
+/// State backing the headers textarea (input + its change subscription).
+struct HookInputState {
+    input: Entity<TextareaState>,
+    _subscription: gpui::Subscription,
+}
+
+fn headers_to_text(h: &HookConfig) -> String {
+    h.headers
+        .iter()
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn set_headers_text(h: &mut HookConfig, text: &str) {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let (k, v) = (k.trim(), v.trim());
+            if !k.is_empty() {
+                map.insert(k.to_string(), v.to_string());
+            }
+        }
+    }
+    h.headers = map;
+}
+
+/// "Remove Hook" button shown at the bottom of each hook's settings.
+fn hook_remove_field(
+    config: ConfigArc,
+    ix: usize,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement {
+    move |_options, _window, _cx| {
+        let cfg = config.clone();
+        Button::new(SharedString::from(format!("hook-{ix}-remove")))
+            .outline()
+            .label("Remove Hook")
+            .on_click(move |_, _, cx: &mut App| {
+                if remove_hook(&cfg, ix) {
+                    cx.refresh_windows();
+                }
+            })
+            .into_any_element()
+    }
+}
+
+/// "Add Hook" button shown in the last group of the Hooks page.
+fn add_hook_field(
+    config: ConfigArc,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement {
+    move |_options, _window, _cx| {
+        let cfg = config.clone();
+        Button::new("hooks-add")
+            .label("Add Hook")
+            .on_click(move |_, _, cx: &mut App| {
+                add_hook(&cfg);
+                cx.refresh_windows();
+            })
+            .into_any_element()
+    }
+}
+
+fn get_hook_enabled(h: &HookConfig) -> bool {
+    h.enabled
+}
+fn set_hook_enabled(h: &mut HookConfig, v: bool) {
+    h.enabled = v;
+}
+fn get_hook_name(h: &HookConfig) -> String {
+    h.name.clone()
+}
+fn set_hook_name(h: &mut HookConfig, v: SharedString) {
+    h.name = v.to_string();
+}
+fn get_hook_url(h: &HookConfig) -> String {
+    h.url.clone()
+}
+fn set_hook_url(h: &mut HookConfig, v: SharedString) {
+    h.url = v.to_string();
+}
+fn get_hook_timeout(h: &HookConfig) -> String {
+    h.timeout_secs.to_string()
+}
+fn set_hook_timeout(h: &mut HookConfig, v: SharedString) {
+    if let Ok(secs) = v.parse::<u64>() {
+        h.timeout_secs = secs.max(1);
+    }
+}
+
+/// Build the groups of the Hooks settings page: one per configured hook,
+/// plus a trailing group with the add button.
+fn hook_groups(config: ConfigArc) -> Vec<SettingGroup> {
+    let count = config.read().hooks.hooks.len();
+    let mut groups: Vec<SettingGroup> = (0..count)
+        .map(|ix| {
+            let title = with_hook(&config, ix, |h| h.name.clone(), String::new());
+            let title = if title.trim().is_empty() {
+                format!("Hook {}", ix + 1)
+            } else {
+                title
+            };
+            SettingGroup::new().title(title).items(vec![
+                SettingItem::new(
+                    "Enabled",
+                    hook_switch_field(config.clone(), ix, get_hook_enabled, set_hook_enabled),
+                )
+                .description("Uncheck to pause this hook without deleting it."),
+                SettingItem::new(
+                    "Name",
+                    hook_input_field(config.clone(), ix, get_hook_name, set_hook_name),
+                )
+                .layout(Axis::Vertical),
+                SettingItem::new(
+                    "URL",
+                    hook_input_field(config.clone(), ix, get_hook_url, set_hook_url),
+                )
+                .layout(Axis::Vertical)
+                .description("e.g. http://127.0.0.1:8080/hook"),
+                SettingItem::new("Method", hook_method_field(config.clone(), ix)),
+                SettingItem::new(
+                    "Timeout (seconds)",
+                    hook_input_field(config.clone(), ix, get_hook_timeout, set_hook_timeout),
+                ),
+                SettingItem::new(
+                    "Events",
+                    SettingField::render(hook_events_field(config.clone(), ix)),
+                )
+                .layout(Axis::Vertical)
+                .description("Which lifecycle events trigger this hook."),
+                SettingItem::new(
+                    "Headers (one per line, \"Key: Value\")",
+                    SettingField::render(hook_headers_field(config.clone(), ix)),
+                )
+                .layout(Axis::Vertical),
+                SettingItem::new(
+                    "",
+                    SettingField::render(hook_remove_field(config.clone(), ix)),
+                )
+                .layout(Axis::Vertical),
+            ])
+        })
+        .collect();
+    groups.push(
+        SettingGroup::new()
+            .title("Manage")
+            .items(vec![SettingItem::new(
+                "",
+                SettingField::render(add_hook_field(config)),
+            )]),
+    );
+    groups
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────
 
 impl Render for SettingsPage {
@@ -602,11 +955,19 @@ impl Render for SettingsPage {
                                         ),
                                         SettingItem::new(
                                             "UPnP friendly name",
-                                            input_field(config, get_upnp_name, set_upnp_name),
+                                            input_field(config.clone(), get_upnp_name, set_upnp_name),
                                         )
                                         .layout(Axis::Vertical),
                                     ]),
                                 ),
+                                // ── Hooks ──
+                                SettingPage::new("Hooks")
+                                    .description(
+                                        "Webhook-style notifications for torrent lifecycle events, \
+                                         delivered as JSON over HTTP. See the hooks module docs \
+                                         for the payload contract.",
+                                    )
+                                    .groups(hook_groups(config.clone())),
                             ]),
                     ),
             )

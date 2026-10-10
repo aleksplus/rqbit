@@ -180,6 +180,9 @@ pub async fn build_entry(
     Ok(AddTorrentEntry {
         source,
         name,
+        info_hash: response.details.info_hash,
+        output_folder,
         files,
+        hook_note: None,
     })
 }

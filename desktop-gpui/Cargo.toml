@@ -32,6 +32,7 @@ librqbit = { workspace = true, features = [
 ] }
 tokio = { workspace = true, features = ["full"] }
 anyhow = { workspace = true }
+reqwest = { workspace = true, features = ["json", "query"] }
 base64 = { workspace = true }
 http = { workspace = true }
 directories = { workspace = true }

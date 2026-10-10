@@ -12,6 +12,54 @@ use librqbit::{
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use crate::hooks::HookEvent;
+
+/// HTTP method used to contact a hook endpoint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum HttpMethod {
+    #[default]
+    Post,
+    Get,
+}
+
+/// A single webhook-style hook. See [`crate::hooks`] for the wire contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HookConfig {
+    pub name: String,
+    pub enabled: bool,
+    /// Events this hook subscribes to (see [`HookEvent`]).
+    pub events: Vec<HookEvent>,
+    pub method: HttpMethod,
+    pub url: String,
+    /// Request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Extra HTTP headers sent with every request.
+    pub headers: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for HookConfig {
+    fn default() -> Self {
+        Self {
+            name: "New hook".to_string(),
+            enabled: true,
+            events: vec![HookEvent::TorrentAdded],
+            method: HttpMethod::Post,
+            url: String::new(),
+            timeout_secs: 10,
+            headers: Default::default(),
+        }
+    }
+}
+
+/// Hooks section of the desktop config.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RqbitDesktopConfigHooks {
+    pub hooks: Vec<HookConfig>,
+}
+
 // Config read/write functions
 pub fn read_config(path: &str) -> anyhow::Result<RqbitDesktopConfig> {
     use std::fs::File;
@@ -209,6 +257,8 @@ pub struct RqbitDesktopConfig {
     #[serde(default)]
     pub ratelimits: LimitsConfig,
 
+    pub hooks: RqbitDesktopConfigHooks,
+
     /// UI theme: "light" or "dark". Defaults to "light".
     #[serde(default)]
     pub theme: String,
@@ -230,6 +280,7 @@ impl Default for RqbitDesktopConfig {
             persistence: Default::default(),
             http_api: Default::default(),
             ratelimits: Default::default(),
+            hooks: Default::default(),
             theme: "light".to_string(),
             #[cfg(feature = "disable-upload")]
             disable_upload: false,
@@ -250,5 +301,49 @@ impl RqbitDesktopConfig {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_config_without_hooks_key_deserializes() {
+        let json = r#"{"default_download_location": "/tmp/dl"}"#;
+        let cfg: RqbitDesktopConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.hooks.hooks.is_empty());
+    }
+
+    #[test]
+    fn hooks_roundtrip() {
+        let cfg = RqbitDesktopConfig {
+            hooks: RqbitDesktopConfigHooks {
+                hooks: vec![HookConfig {
+                    name: "svc".into(),
+                    enabled: false,
+                    events: vec![HookEvent::TorrentCompleted, HookEvent::FileSelection],
+                    method: HttpMethod::Get,
+                    url: "http://127.0.0.1:9999/hook".into(),
+                    timeout_secs: 3,
+                    headers: [("Authorization".to_string(), "Bearer x".to_string())].into(),
+                }],
+            },
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        assert!(s.contains(r#""torrent_completed""#));
+        assert!(s.contains(r#""file_selection""#));
+        let back: RqbitDesktopConfig = serde_json::from_str(&s).unwrap();
+        assert!(cfg == back);
+    }
+
+    #[test]
+    fn hook_defaults() {
+        let h: HookConfig = serde_json::from_str(r#"{"url": "http://x"}"#).unwrap();
+        assert!(h.enabled);
+        assert_eq!(h.timeout_secs, 10);
+        assert_eq!(h.method, HttpMethod::Post);
+        assert_eq!(h.events, vec![HookEvent::TorrentAdded]);
     }
 }

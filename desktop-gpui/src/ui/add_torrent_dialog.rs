@@ -46,8 +46,14 @@ pub enum AddTorrentDialogEvent {
 pub struct AddTorrentEntry {
     pub source: AddTorrentSource,
     pub name: String,
+    /// Info hash resolved via `list_only` (empty string if unavailable).
+    pub info_hash: String,
+    /// Destination folder resolved via `list_only`.
+    pub output_folder: std::path::PathBuf,
     /// Resolved file rows. Empty means "add all files" (no selection UI).
     pub files: Vec<FileRow>,
+    /// Names of hooks that pre-adjusted the file selection, shown as a hint.
+    pub hook_note: Option<String>,
 }
 
 /// A modal dialog that lets the user pick which files of one or more torrents
@@ -167,6 +173,10 @@ impl Render for AddTorrentDialog {
             .map(|e| !e.files.is_empty())
             .unwrap_or(false);
         let has_existing = self.current_has_existing();
+        let hook_note = self
+            .entries
+            .get(self.current)
+            .and_then(|e| e.hook_note.clone());
 
         v_flex()
             .gap_3()
@@ -186,6 +196,16 @@ impl Render for AddTorrentDialog {
                     .text_color(theme.muted_foreground)
                     .child(name),
             )
+            .when_some(hook_note, |this, note| {
+                this.child(
+                    div()
+                        .text_size(px(12.))
+                        .text_color(theme.muted_foreground)
+                        .child(format!(
+                            "File selection adjusted by hook: {note}. You can still change it."
+                        )),
+                )
+            })
             .when(has_existing, |this| {
                 this.child(
                     div()

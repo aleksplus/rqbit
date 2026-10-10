@@ -1,4 +1,5 @@
 use crate::config::{RqbitDesktopConfig, read_config, write_config};
+use crate::hooks::HookDispatcher;
 use librqbit::{api::Api, tracing_subscriber_config_utils::InitLoggingResult};
 use librqbit_dualstack_sockets::TcpListener;
 use std::{path::Path, sync::Arc};
@@ -23,6 +24,13 @@ impl SharedState {
         self.api.clone()
     }
 
+    /// Direct constructor for tests (the normal path builds the API from a
+    /// config, which starts listeners).
+    #[cfg(test)]
+    pub(crate) fn for_test(config: RqbitDesktopConfig, api: Arc<Api>) -> Self {
+        Self { config, api }
+    }
+
     pub fn config(&self) -> RqbitDesktopConfig {
         self.config.clone()
     }
@@ -37,6 +45,7 @@ pub struct State {
     pub config_filename: String,
     shared: Arc<RwLock<SharedState>>,
     init_logging: Arc<InitLoggingResult>,
+    hooks: Arc<HookDispatcher>,
 }
 
 impl Clone for State {
@@ -45,6 +54,7 @@ impl Clone for State {
             config_filename: self.config_filename.clone(),
             shared: self.shared.clone(),
             init_logging: self.init_logging.clone(),
+            hooks: self.hooks.clone(),
         }
     }
 }
@@ -196,10 +206,20 @@ impl State {
             api: Arc::new(api),
         }));
 
+        // The hook dispatcher reads hooks from the shared config at dispatch
+        // time and runs its completion watcher on the tokio runtime (we are
+        // inside `#[tokio::main]` here).
+        let hooks = Arc::new(HookDispatcher::new(
+            shared.clone(),
+            tokio::runtime::Handle::current(),
+        ));
+        hooks.start();
+
         Ok(Self {
             config_filename,
             shared,
             init_logging: Arc::new(init_logging),
+            hooks,
         })
     }
 
@@ -209,6 +229,10 @@ impl State {
 
     pub fn api(&self) -> Arc<Api> {
         self.shared.read().api()
+    }
+
+    pub fn hooks(&self) -> Arc<HookDispatcher> {
+        self.hooks.clone()
     }
 
     /// Return a snapshot of the current config.
