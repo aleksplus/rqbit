@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use librqbit::{AddTorrent, AddTorrentOptions, Api, ApiError, api::ApiAddTorrentResponse};
 use parking_lot::{Mutex, RwLock};
 use tracing::{debug, warn};
 
@@ -13,7 +14,8 @@ use crate::ui::add_torrent_dialog::AddTorrentEntry;
 
 use super::HookEvent;
 use super::payload::{
-    FileSelectionRequest, FileSelectionResponse, TorrentCompletedPayload, TorrentInfo, envelope,
+    FileSelectionRequest, FileSelectionResponse, TorrentAddedPayload, TorrentCompletedPayload,
+    TorrentInfo, envelope,
 };
 
 /// How often the completion watcher polls the session.
@@ -138,6 +140,80 @@ impl HookDispatcher {
     /// Fire-and-forget delivery of an event to all matching hooks.
     pub fn dispatch(&self, event: HookEvent, payload: serde_json::Value) {
         spawn_deliveries(&self.shared, &self.client, &self.runtime, event, &payload);
+    }
+
+    /// Add a torrent through the session API, fire the `torrent_added` hook
+    /// for fresh adds, and move the local source file (when the add came from
+    /// one and a move folder is configured). This is the shared add path: the
+    /// add-torrent dialog and the folder watcher both call it, so
+    /// watcher-added torrents behave identically to UI-added ones. `paused`
+    /// starts the torrent in a paused state (the folder watcher passes the
+    /// configured `auto_add_paused` flag; dialog adds pass `false`). The hook
+    /// is skipped when the torrent was already managed (the API response
+    /// does not distinguish that case, so the watcher's known-ID set
+    /// decides); the source file is moved regardless, as cleanup.
+    pub async fn add_and_dispatch_added(
+        &self,
+        api: &Api,
+        add: AddTorrent<'static>,
+        only_files: Option<Vec<usize>>,
+        overwrite: bool,
+        paused: bool,
+        source_path: Option<std::path::PathBuf>,
+    ) -> Result<ApiAddTorrentResponse, ApiError> {
+        let opts = Some(AddTorrentOptions {
+            only_files: only_files.clone(),
+            overwrite,
+            paused,
+            ..Default::default()
+        });
+        let response = api.api_add_torrent(add, opts).await?;
+        if let Some(id) = response.id
+            && !self.is_known(id)
+        {
+            self.prime_added(id);
+            let files = response.details.files.as_deref().unwrap_or(&[]);
+            self.dispatch(
+                HookEvent::TorrentAdded,
+                envelope(
+                    HookEvent::TorrentAdded,
+                    TorrentAddedPayload {
+                        torrent: TorrentInfo {
+                            id: Some(id),
+                            name: response.details.name.clone(),
+                            info_hash: response.details.info_hash.clone(),
+                            output_folder: response.output_folder.clone(),
+                        },
+                        files_total: files.len(),
+                        files_selected: files.iter().filter(|f| f.included).count(),
+                        selected_indices: only_files,
+                    },
+                ),
+            );
+        }
+        if let Some(path) = source_path {
+            let move_folder = self.shared.read().config().move_torrents_folder;
+            // Skip quietly when the file is already gone (e.g. the folder
+            // watcher handled the same file first).
+            if !move_folder.as_os_str().is_empty() && path.exists() {
+                match crate::folder_watcher::move_file(&path, &move_folder) {
+                    Ok(()) => {
+                        tracing::info!(
+                            from = %path.display(),
+                            "moved added torrent source file"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            from = %path.display(),
+                            error = %e,
+                            "error moving torrent source file"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(response)
     }
 
     /// Whether the watcher already knows this torrent ID (it existed in the
@@ -405,6 +481,7 @@ mod tests {
             name: "Test Torrent".into(),
             info_hash: "0123456789abcdef".into(),
             output_folder: "/tmp".into(),
+            source_path: None,
             files: vec![
                 FileRow {
                     file_index: 0,
@@ -500,5 +577,106 @@ mod tests {
         assert!(raw.contains("POST /added"));
         assert!(raw.contains("torrent_added"));
         assert!(raw.contains("x-rqbit-event: torrent_added"));
+    }
+
+    // ── Move-after-add ─────────────────────────────────────────────────────
+
+    use crate::folder_watcher::tests::{TempDir, torrent_bytes};
+
+    /// Adding through the shared callback (the dialog's path) moves the local
+    /// source file to the configured folder once a move folder is set.
+    #[tokio::test]
+    async fn manual_add_moves_source_file() {
+        let src_dir = TempDir::new("manual-src");
+        let move_dir = TempDir::new("manual-move");
+        let src = src_dir.path().join("picked.torrent");
+        std::fs::write(&src, torrent_bytes()).unwrap();
+
+        let session = librqbit::Session::new_with_opts(
+            std::env::temp_dir(),
+            librqbit::SessionOptions {
+                dht: None,
+                persistence: None,
+                listen: None,
+                disable_local_service_discovery: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let api = Arc::new(librqbit::Api::new(session, None, None));
+        let config = crate::config::RqbitDesktopConfig {
+            move_torrents_folder: move_dir.path().to_path_buf(),
+            ..Default::default()
+        };
+        let shared = Arc::new(RwLock::new(SharedState::for_test(config, api.clone())));
+
+        let dispatcher = HookDispatcher::new(shared, tokio::runtime::Handle::current());
+        dispatcher
+            .add_and_dispatch_added(
+                &api,
+                librqbit::AddTorrent::from_bytes(torrent_bytes()),
+                None,
+                true,
+                false,
+                Some(src.clone()),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !src.exists(),
+            "the picked source file should have been moved"
+        );
+        let dest = move_dir.path().join("picked.torrent");
+        assert_eq!(std::fs::read(&dest).unwrap(), torrent_bytes());
+        assert_eq!(
+            api.api_torrent_list_ext(librqbit::api::ApiTorrentListOpts { with_stats: false })
+                .torrents
+                .len(),
+            1,
+            "the torrent should be managed by the session"
+        );
+    }
+
+    /// Without a configured move folder the source file stays where it is.
+    #[tokio::test]
+    async fn manual_add_keeps_source_without_move_folder() {
+        let src_dir = TempDir::new("nomove-src");
+        let src = src_dir.path().join("picked.torrent");
+        std::fs::write(&src, torrent_bytes()).unwrap();
+
+        let session = librqbit::Session::new_with_opts(
+            std::env::temp_dir(),
+            librqbit::SessionOptions {
+                dht: None,
+                persistence: None,
+                listen: None,
+                disable_local_service_discovery: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        let api = Arc::new(librqbit::Api::new(session, None, None));
+        let shared = Arc::new(RwLock::new(SharedState::for_test(
+            crate::config::RqbitDesktopConfig::default(),
+            api.clone(),
+        )));
+
+        let dispatcher = HookDispatcher::new(shared, tokio::runtime::Handle::current());
+        dispatcher
+            .add_and_dispatch_added(
+                &api,
+                librqbit::AddTorrent::from_bytes(torrent_bytes()),
+                None,
+                true,
+                false,
+                Some(src.clone()),
+            )
+            .await
+            .unwrap();
+
+        assert!(src.exists(), "no move folder configured, file stays");
     }
 }

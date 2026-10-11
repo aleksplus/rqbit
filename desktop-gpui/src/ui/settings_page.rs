@@ -1,3 +1,4 @@
+use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, Sizable as _, Size, Theme, ThemeMode,
@@ -31,11 +32,16 @@ pub enum SettingsPageEvent {
 /// Replaces the old `ConfigModal`. The config is stored in an `Arc<RwLock<...>>`
 /// so that the `SettingField` closures (which receive `&App` / `&mut App`) can
 /// read and mutate it.  An **Apply** button persists the config and reconfigures
-/// the live session.
+/// the live session; the page stays open (with the error shown) if that fails,
+/// so a failed reconfigure never silently rolls the user's changes back.
 pub struct SettingsPage {
     state: Arc<State>,
     config: ConfigArc,
     focus_handle: FocusHandle,
+    /// True while the session reconfigure spawned by **Apply** is running.
+    applying: bool,
+    /// Error text from the last failed Apply, rendered under the toolbar.
+    apply_error: Option<SharedString>,
 }
 
 impl EventEmitter<SettingsPageEvent> for SettingsPage {}
@@ -47,6 +53,8 @@ impl SettingsPage {
             state,
             config: Arc::new(parking_lot::RwLock::new(config)),
             focus_handle: cx.focus_handle(),
+            applying: false,
+            apply_error: None,
         }
     }
 
@@ -55,6 +63,11 @@ impl SettingsPage {
     }
 
     fn on_apply(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.applying {
+            return;
+        }
+        self.apply_error = None;
+
         let config = self.config.read().clone();
 
         // Apply the theme from config immediately so the UI updates without
@@ -67,20 +80,34 @@ impl SettingsPage {
         Theme::change(theme_mode, Some(_window), cx);
 
         if let Err(e) = write_config(&self.state.config_filename, &config) {
-            eprintln!("Error writing config: {:?}", e);
+            self.apply_error = Some(format!("Error writing config: {e:#}").into());
+            cx.notify();
+            return;
         }
 
+        // Reconfigure in the background: the old session is stopped and a new
+        // one built, which takes a moment. Keep the page open until it settles
+        // so failures are visible instead of silently discarding the changes.
+        self.applying = true;
+        cx.notify();
+
         let state = self.state.clone();
-        let entity_id = cx.entity_id();
+        let page = cx.entity();
         cx.spawn(async move |_, cx| {
-            if let Err(e) = state.configure(config).await {
-                eprintln!("Error reconfiguring session: {:?}", e);
-            }
-            cx.update(|cx| cx.notify(entity_id));
+            let result = state.configure(config).await;
+            cx.update_entity(&page, |page: &mut SettingsPage, cx| {
+                page.applying = false;
+                match result {
+                    Ok(()) => cx.emit(SettingsPageEvent::Back),
+                    Err(e) => {
+                        page.apply_error =
+                            Some(format!("Error reconfiguring session: {e:#}").into());
+                        cx.notify();
+                    }
+                }
+            });
         })
         .detach();
-
-        cx.emit(SettingsPageEvent::Back);
     }
 
     fn on_reset(&mut self, cx: &mut Context<Self>) {
@@ -176,6 +203,7 @@ fn download_location_field(
             .gap_2()
             .child(
                 Input::new(&state.input)
+                    .id("download-location")
                     .flex_1()
                     .disabled(options.is_disabled())
                     .with_size(options.size()),
@@ -213,10 +241,199 @@ fn download_location_field(
     }
 }
 
+/// State backing the load-torrents-location input.
+struct LoadTlsInputState {
+    input: Entity<InputState>,
+    _subscription: gpui::Subscription,
+}
+
+/// A load-torrents-location field that pairs a text input with a Browse button.
+fn load_torrents_location_field(
+    config: ConfigArc,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement {
+    move |options, window, cx| {
+        let value = get_load_torrents_location(&config.read());
+        let set = set_load_torrents_location;
+        let cfg = config.clone();
+
+        let state_entity = window.use_keyed_state("load-torrents-location-input", cx, {
+            let value = value.clone();
+            move |window, cx| {
+                let input = cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
+                let _subscription = cx.subscribe(&input, {
+                    let cfg = cfg.clone();
+                    move |_, input, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            let v = input.read(cx).value();
+                            set(&mut cfg.write(), v);
+                        }
+                    }
+                });
+                LoadTlsInputState {
+                    input,
+                    _subscription,
+                }
+            }
+        });
+
+        // Keep the displayed text in sync when config changes externally.
+        state_entity.update(cx, |state, cx| {
+            if state.input.read(cx).value() != value {
+                state.input.update(cx, |input, cx| {
+                    input.set_value(value.clone(), window, cx);
+                });
+            }
+        });
+
+        let state = state_entity.read(cx);
+
+        h_flex()
+            .gap_2()
+            .child(
+                Input::new(&state.input)
+                    .id("load-torrents-location")
+                    .flex_1()
+                    .disabled(options.is_disabled())
+                    .with_size(options.size()),
+            )
+            .child(
+                Button::new("browse-load-torrents-folder")
+                    .label("Browse…")
+                    .disabled(options.is_disabled())
+                    .on_click({
+                        let cfg = config.clone();
+                        move |_, _window, cx| {
+                            let rx = cx.prompt_for_paths(PathPromptOptions {
+                                files: false,
+                                directories: true,
+                                multiple: false,
+                                prompt: Some("Select load torrent folder".into()),
+                            });
+                            let cfg = cfg.clone();
+                            cx.spawn(async move |cx| {
+                                if let Ok(Ok(Some(paths))) = rx.await
+                                    && let Some(path) = paths.into_iter().next()
+                                {
+                                    set(
+                                        &mut cfg.write(),
+                                        path.to_string_lossy().into_owned().into(),
+                                    );
+                                    cx.update(|cx| cx.refresh_windows());
+                                }
+                            })
+                            .detach();
+                        }
+                    }),
+            )
+            .into_any_element()
+    }
+}
+
+/// State backing the move-torrents-location input.
+struct MoveTlsInputState {
+    input: Entity<InputState>,
+    _subscription: gpui::Subscription,
+}
+
+/// A move-torrents-location field that pairs a text input with a Browse button.
+fn move_torrents_location_field(
+    config: ConfigArc,
+) -> impl Fn(&RenderOptions, &mut Window, &mut App) -> AnyElement {
+    move |options, window, cx| {
+        let value = get_move_torrents_location(&config.read());
+        let set = set_move_torrents_location;
+        let cfg = config.clone();
+
+        let state_entity = window.use_keyed_state("move-torrents-location-input", cx, {
+            let value = value.clone();
+            move |window, cx| {
+                let input = cx.new(|cx| InputState::new(window, cx).default_value(value.clone()));
+                let _subscription = cx.subscribe(&input, {
+                    let cfg = cfg.clone();
+                    move |_, input, event: &InputEvent, cx| {
+                        if matches!(event, InputEvent::Change) {
+                            let v = input.read(cx).value();
+                            set(&mut cfg.write(), v);
+                        }
+                    }
+                });
+                MoveTlsInputState {
+                    input,
+                    _subscription,
+                }
+            }
+        });
+
+        // Keep the displayed text in sync when config changes externally.
+        state_entity.update(cx, |state, cx| {
+            if state.input.read(cx).value() != value {
+                state.input.update(cx, |input, cx| {
+                    input.set_value(value.clone(), window, cx);
+                });
+            }
+        });
+
+        let state = state_entity.read(cx);
+
+        h_flex()
+            .gap_2()
+            .child(
+                Input::new(&state.input)
+                    .id("move-torrents-location")
+                    .flex_1()
+                    .disabled(options.is_disabled())
+                    .with_size(options.size()),
+            )
+            .child(
+                Button::new("browse-move-torrents-folder")
+                    .label("Browse…")
+                    .disabled(options.is_disabled())
+                    .on_click({
+                        let cfg = config.clone();
+                        move |_, _window, cx| {
+                            let rx = cx.prompt_for_paths(PathPromptOptions {
+                                files: false,
+                                directories: true,
+                                multiple: false,
+                                prompt: Some("Select move torrent folder".into()),
+                            });
+                            let cfg = cfg.clone();
+                            cx.spawn(async move |cx| {
+                                if let Ok(Ok(Some(paths))) = rx.await
+                                    && let Some(path) = paths.into_iter().next()
+                                {
+                                    set(
+                                        &mut cfg.write(),
+                                        path.to_string_lossy().into_owned().into(),
+                                    );
+                                    cx.update(|cx| cx.refresh_windows());
+                                }
+                            })
+                            .detach();
+                        }
+                    }),
+            )
+            .into_any_element()
+    }
+}
+
 // ── Config accessors ────────────────────────────────────────────────────────
 
 fn get_dl_location(c: &RqbitDesktopConfig) -> String {
     c.default_download_location.to_string_lossy().to_string()
+}
+fn get_load_torrents_location(c: &RqbitDesktopConfig) -> String {
+    c.load_torrents_folder.to_string_lossy().to_string()
+}
+fn set_load_torrents_location(c: &mut RqbitDesktopConfig, v: SharedString) {
+    c.load_torrents_folder = v.to_string().into();
+}
+
+fn get_auto_add_paused(c: &RqbitDesktopConfig) -> bool {
+    c.auto_add_paused
+}
+fn set_auto_add_paused(c: &mut RqbitDesktopConfig, v: bool) {
+    c.auto_add_paused = v;
 }
 fn set_dl_location(c: &mut RqbitDesktopConfig, v: SharedString) {
     c.default_download_location = v.to_string().into();
@@ -390,6 +607,16 @@ fn get_upnp_name(c: &RqbitDesktopConfig) -> String {
 fn set_upnp_name(c: &mut RqbitDesktopConfig, v: SharedString) {
     let s = v.to_string();
     c.upnp.server_friendly_name = if s.is_empty() { None } else { Some(s) };
+}
+
+/// Get the current move-torrents-folder configuration value.
+fn get_move_torrents_location(c: &RqbitDesktopConfig) -> String {
+    c.move_torrents_folder.to_string_lossy().to_string()
+}
+
+/// Set the move-torrents-folder configuration value.
+fn set_move_torrents_location(c: &mut RqbitDesktopConfig, v: SharedString) {
+    c.move_torrents_folder = v.to_string().into();
 }
 
 fn get_theme_dark(c: &RqbitDesktopConfig) -> bool {
@@ -760,6 +987,8 @@ impl Render for SettingsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let config = self.config.clone();
+        let applying = self.applying;
+        let apply_error = self.apply_error.clone();
 
         v_flex()
             .size_full()
@@ -782,17 +1011,37 @@ impl Render for SettingsPage {
                     .child(
                         Button::new("settings-reset")
                             .label("Reset to Default")
+                            .disabled(applying)
                             .on_click(cx.listener(|this, _, _, cx| this.on_reset(cx))),
                     )
                     .child(
                         h_flex().flex_1().justify_end().child(
                             Button::new("settings-apply")
                                 .primary()
-                                .label("Apply")
+                                .label(if applying { "Applying…" } else { "Apply" })
+                                .disabled(applying)
                                 .on_click(cx.listener(|this, _, window, cx| this.on_apply(window, cx))),
                         ),
                     ),
             )
+            // Apply failure banner (kept visible until the next Apply)
+            .when_some(apply_error, |this, error| {
+                this.child(
+                    h_flex()
+                        .id("settings-apply-error")
+                        .px_4()
+                        .py_2()
+                        .bg(theme.danger_foreground.opacity(0.1))
+                        .border_b_1()
+                        .border_color(theme.danger)
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(theme.danger_foreground)
+                                .child(error),
+                        ),
+                )
+            })
             // Settings content
             .child(
                 div()
@@ -812,6 +1061,29 @@ impl Render for SettingsPage {
                                             SettingField::render(download_location_field(config.clone())),
                                         )
                                         .layout(Axis::Vertical),
+                                        SettingItem::new(
+                                            "Autoload torrents from folder",
+                                            SettingField::render(load_torrents_location_field(config.clone())),
+                                        )
+                                        .layout(Axis::Vertical)
+                                        .description(
+                                            "Watched (recursively) for new .torrent and .magnet files to add automatically. Empty disables.",
+                                        ),
+                                        SettingItem::new(
+                                            "Add autoloaded torrents paused",
+                                            switch_field(config.clone(), get_auto_add_paused, set_auto_add_paused),
+                                        )
+                                        .description(
+                                            "Torrents picked up from the watch folder start paused; start them from the torrent list when ready.",
+                                        ),
+                                        SettingItem::new(
+                                            "Move added torrents to folder",
+                                            SettingField::render(move_torrents_location_field(config.clone())),
+                                        )
+                                        .layout(Axis::Vertical)
+                                        .description(
+                                            "After a torrent is added (from the watch folder or the file picker), its source file is moved here. Empty disables.",
+                                        ),
                                     ]))
                                     .group(
                                         SettingGroup::new().title("Appearance").items(vec![
@@ -977,5 +1249,111 @@ impl Render for SettingsPage {
 impl Focusable for SettingsPage {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // NOTE: no `use super::*` / `use gpui::*` here — a glob-imported `test`
+    // macro shadows the built-in #[test] that #[gpui_kit::test] expands to.
+    use super::SettingsPage;
+    use crate::folder_watcher::tests::TempDir;
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext as _, TestAppContext, px, size};
+
+    /// End-to-end reproduction of the reported bug: open settings, click the
+    /// real Browse button for the autoload folder, answer the (queued, native)
+    /// path prompt, and check that the picked directory lands both in the
+    /// displayed input and in the page config that Apply persists.
+    #[gpui_kit::test]
+    fn browse_retains_load_and_move_folders(cx: &mut TestAppContext) {
+        // librqbit sessions require a tokio runtime; the UI interactions below
+        // never await tokio I/O on this thread.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
+
+        let watch_dir = TempDir::new("ui-watch");
+        let move_dir = TempDir::new("ui-move");
+        let scratch = TempDir::new("ui-scratch");
+        let config_filename = scratch.path().join("config.json");
+        let config_filename = config_filename.to_str().unwrap().to_owned();
+
+        let state = std::sync::Arc::new(rt.block_on(crate::state::tests::test_state(
+            crate::state::tests::quiet_config(),
+            config_filename,
+        )));
+
+        let (window_handle, page) = cx.update(|cx| {
+            gpui_kit::init(cx);
+            gpui_kit::open_window(
+                gpui::WindowOptions {
+                    window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds {
+                        origin: gpui::Point::default(),
+                        size: size(px(1100.), px(800.)),
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| cx.new(|cx| SettingsPage::new(window, cx, state.clone())),
+            )
+            .expect("open test window")
+        });
+
+        let watch_path = watch_dir.path().to_path_buf();
+        let move_path = move_dir.path().to_path_buf();
+
+        cx.update_window(window_handle, |_, window, cx| {
+            window.render_frame(cx);
+            // Fields start empty.
+            assert_eq!(window.find("load-torrents-location").value(), Some(""));
+            assert_eq!(window.find("move-torrents-location").value(), Some(""));
+
+            // Pick the autoload folder through the real button + native prompt.
+            window.click("browse-load-torrents-folder", cx);
+        })
+        .unwrap();
+        cx.simulate_path_prompt_response({
+            let watch_path = watch_path.clone();
+            move |_| Some(vec![watch_path.clone()])
+        });
+        cx.run_until_parked();
+
+        cx.update_window(window_handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("load-torrents-location").value(),
+                Some(watch_path.to_str().unwrap()),
+                "autoload field should display the picked directory"
+            );
+        })
+        .unwrap();
+
+        // Now the move folder.
+        cx.update_window(window_handle, |_, window, cx| {
+            window.click("browse-move-torrents-folder", cx);
+        })
+        .unwrap();
+        cx.simulate_path_prompt_response({
+            let move_path = move_path.clone();
+            move |_| Some(vec![move_path.clone()])
+        });
+        cx.run_until_parked();
+
+        cx.update_window(window_handle, |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("move-torrents-location").value(),
+                Some(move_path.to_str().unwrap()),
+                "move field should display the picked directory"
+            );
+        })
+        .unwrap();
+
+        // The page-local config (what Apply persists) must hold both folders.
+        cx.update(|cx| {
+            let config = page.read(cx).config.read().clone();
+            assert_eq!(config.load_torrents_folder, watch_path);
+            assert_eq!(config.move_torrents_folder, move_path);
+        });
     }
 }

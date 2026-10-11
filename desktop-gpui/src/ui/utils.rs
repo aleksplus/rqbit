@@ -182,6 +182,7 @@ pub async fn build_entry(
         name,
         info_hash: response.details.info_hash,
         output_folder,
+        source_path: None,
         files,
         hook_note: None,
     })

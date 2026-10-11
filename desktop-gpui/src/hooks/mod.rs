@@ -10,9 +10,10 @@
 //! # Events
 //!
 //! - [`HookEvent::TorrentAdded`] — fired once after a torrent is actually
-//!   added through the UI. Torrents restored from persisted state at app
-//!   startup do not fire it, and re-adding an already-managed torrent is
-//!   detected and skipped.
+//!   added through the UI or the watched folder (both go through
+//!   [`HookDispatcher::add_and_dispatch_added`]). Torrents restored from
+//!   persisted state at app startup do not fire it, and re-adding an
+//!   already-managed torrent is detected and skipped.
 //! - [`HookEvent::TorrentDeleted`] — fired after a torrent is deleted (with
 //!   files) or forgotten (files kept); the payload carries the `delete_files`
 //!   flag.
@@ -69,7 +70,7 @@ mod payload;
 
 pub use dispatcher::HookDispatcher;
 pub(crate) use payload::envelope;
-pub use payload::{TorrentAddedPayload, TorrentDeletedPayload, TorrentInfo};
+pub use payload::{TorrentDeletedPayload, TorrentInfo};
 
 use serde::{Deserialize, Serialize};
 

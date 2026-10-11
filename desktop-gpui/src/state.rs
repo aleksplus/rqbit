@@ -1,4 +1,5 @@
 use crate::config::{RqbitDesktopConfig, read_config, write_config};
+use crate::folder_watcher::start_folder_watcher;
 use crate::hooks::HookDispatcher;
 use librqbit::{api::Api, tracing_subscriber_config_utils::InitLoggingResult};
 use librqbit_dualstack_sockets::TcpListener;
@@ -215,6 +216,10 @@ impl State {
         ));
         hooks.start();
 
+        // Watch the autoload folder (no-op when unconfigured). The watcher is
+        // tied to this session's lifetime.
+        start_folder_watcher(shared.clone(), hooks.clone());
+
         Ok(Self {
             config_filename,
             shared,
@@ -259,7 +264,18 @@ impl State {
         old_api.session().stop().await;
 
         // Build the replacement API without holding any lock across the await.
-        let api = api_from_config(&self.init_logging, &config).await?;
+        let api = match api_from_config(&self.init_logging, &config).await {
+            Ok(api) => api,
+            Err(e) => {
+                // The config file was already written by the caller; adopt the
+                // new config here too so the UI does not silently roll the
+                // user's changes back (the old session is stopped either way,
+                // and no folder watcher is started for it — restart the app
+                // or fix the config and re-apply).
+                self.shared.write().config = config;
+                return Err(e.into());
+            }
+        };
         if let Err(e) = write_config(&self.config_filename, &config) {
             error!("error writing config: {:#}", e);
         }
@@ -270,6 +286,224 @@ impl State {
             existing.config = config;
             existing.api = Arc::new(api);
         }
+        // The old session's folder watcher exits with its cancellation
+        // token; start one for the new session (no-op when unconfigured).
+        start_folder_watcher(self.shared.clone(), self.hooks.clone());
         Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    /// Build a State around a minimal session (no DHT / listeners /
+    /// persistence / HTTP API) so the test doesn't touch real user state.
+    pub(crate) async fn test_state(config: RqbitDesktopConfig, config_filename: String) -> State {
+        static INIT_LOGGING: std::sync::OnceLock<Arc<InitLoggingResult>> =
+            std::sync::OnceLock::new();
+        let init_logging = INIT_LOGGING
+            .get_or_init(|| {
+                Arc::new(
+                    librqbit::tracing_subscriber_config_utils::init_logging(
+                        librqbit::tracing_subscriber_config_utils::InitLoggingOptions {
+                            default_rust_log_value: Some("info"),
+                            log_file: None,
+                            log_file_rust_log: None,
+                            log_file_json: false,
+                        },
+                    )
+                    .unwrap(),
+                )
+            })
+            .clone();
+        let api = Arc::new(api_from_config(&init_logging, &config).await.unwrap());
+        let shared = Arc::new(RwLock::new(SharedState {
+            config,
+            api: api.clone(),
+        }));
+        let hooks = Arc::new(HookDispatcher::new(
+            shared.clone(),
+            tokio::runtime::Handle::current(),
+        ));
+        State {
+            config_filename,
+            shared,
+            init_logging,
+            hooks,
+        }
+    }
+
+    pub(crate) fn quiet_config() -> RqbitDesktopConfig {
+        RqbitDesktopConfig {
+            default_download_location: std::env::temp_dir(),
+            dht: crate::config::RqbitDesktopConfigDht {
+                disable: true,
+                ..Default::default()
+            },
+            connections: crate::config::RqbitDesktopConfigConnections {
+                enable_tcp_listen: false,
+                enable_utp: false,
+                enable_upnp_port_forward: false,
+                ..Default::default()
+            },
+            persistence: crate::config::RqbitDesktopConfigPersistence {
+                disable: true,
+                ..Default::default()
+            },
+            http_api: crate::config::RqbitDesktopConfigHttpApi {
+                disable: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// Mirror of the settings page's Apply flow: change the load/move folders,
+    /// call `configure`, and check that the shared config is swapped, the
+    /// config file is written, and the new folder watcher actually picks up a
+    /// dropped .torrent file.
+    #[tokio::test]
+    async fn configure_applies_folder_settings_and_starts_watcher() {
+        use crate::folder_watcher::tests::{TempDir, torrent_bytes};
+
+        let watch_dir = TempDir::new("cfg-watch");
+        let move_dir = TempDir::new("cfg-move");
+        let config_file = TempDir::new("cfg-file");
+        let config_filename = config_file.path().join("config.json");
+        let config_filename = config_filename.to_str().unwrap().to_owned();
+
+        let state = test_state(quiet_config(), config_filename.clone()).await;
+
+        let mut new_config = state.config();
+        new_config.load_torrents_folder = watch_dir.path().to_path_buf();
+        new_config.move_torrents_folder = move_dir.path().to_path_buf();
+
+        // Drop a torrent into the watch folder before applying; the watcher
+        // scans pre-existing files on startup.
+        std::fs::write(watch_dir.path().join("dropped.torrent"), torrent_bytes()).unwrap();
+
+        state.configure(new_config.clone()).await.unwrap();
+
+        // Shared config was swapped.
+        assert!(state.config() == new_config);
+        // Config file was persisted with the folders.
+        let persisted = crate::config::read_config(&config_filename).unwrap();
+        assert_eq!(persisted.load_torrents_folder, watch_dir.path());
+        assert_eq!(persisted.move_torrents_folder, move_dir.path());
+        // And the watcher moved the file.
+        let dest = move_dir.path().join("dropped.torrent");
+        for _ in 0..100 {
+            if dest.exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(dest.exists(), "configure() should start the folder watcher");
+    }
+
+    /// Applying an unchanged config is a no-op and must not stop the session.
+    #[tokio::test]
+    async fn configure_noop_when_unchanged() {
+        let state = test_state(quiet_config(), "/tmp/rqbit-cfg-noop/config.json".to_owned()).await;
+
+        let before = state.api();
+        state.configure(state.config()).await.unwrap();
+        let after = state.api();
+
+        assert!(
+            Arc::ptr_eq(&before, &after),
+            "unchanged config must not rebuild the session"
+        );
+    }
+
+    /// Same as above but with the "full-fat" config a real user has: TCP
+    /// listener, HTTP API, DHT and persistence all enabled (pointed at temp
+    /// dirs / scratch ports). This exercises the session replacement path —
+    /// in particular whether the new session can re-bind its listeners after
+    /// the old one is stopped.
+    #[tokio::test]
+    async fn configure_replaces_full_session_without_port_conflict() {
+        use crate::folder_watcher::tests::TempDir;
+
+        let watch_dir = TempDir::new("full-watch");
+        let move_dir = TempDir::new("full-move");
+        let scratch = TempDir::new("full-scratch");
+        let config_filename = scratch.path().join("config.json");
+        let config_filename = config_filename.to_str().unwrap().to_owned();
+
+        let base = || crate::config::RqbitDesktopConfig {
+            default_download_location: std::env::temp_dir(),
+            dht: crate::config::RqbitDesktopConfigDht {
+                disable: false,
+                disable_persistence: false,
+                persistence_filename: scratch.path().join("dht.json"),
+            },
+            connections: crate::config::RqbitDesktopConfigConnections {
+                enable_tcp_listen: true,
+                enable_utp: false,
+                enable_upnp_port_forward: false,
+                listen_port: 39421,
+                ..Default::default()
+            },
+            persistence: crate::config::RqbitDesktopConfigPersistence {
+                disable: false,
+                folder: scratch.path().join("persistence"),
+                ..Default::default()
+            },
+            http_api: crate::config::RqbitDesktopConfigHttpApi {
+                disable: false,
+                listen_addr: "127.0.0.1:39031".parse().unwrap(),
+                read_only: false,
+            },
+            ..Default::default()
+        };
+
+        let state = test_state(base(), config_filename.clone()).await;
+
+        let mut new_config = base();
+        new_config.load_torrents_folder = watch_dir.path().to_path_buf();
+        new_config.move_torrents_folder = move_dir.path().to_path_buf();
+
+        // If this fails, the settings Apply silently rolls back in the UI:
+        // the shared config is never swapped and the folder watcher never
+        // starts, although the config file was already written.
+        state.configure(new_config.clone()).await.unwrap();
+
+        assert!(state.config() == new_config);
+        assert_eq!(
+            state.config().load_torrents_folder,
+            watch_dir.path().to_path_buf()
+        );
+    }
+
+    /// When the replacement session cannot be built, `configure` must still
+    /// adopt the new config (the file was already written by the settings
+    /// page) so the UI does not silently roll the user's changes back.
+    #[tokio::test]
+    async fn configure_failure_still_adopts_config() {
+        let scratch = crate::folder_watcher::tests::TempDir::new("fail-scratch");
+        let config_filename = scratch.path().join("config.json");
+        let config_filename = config_filename.to_str().unwrap().to_owned();
+        let state = test_state(quiet_config(), config_filename.clone()).await;
+
+        // A config with the UPnP server enabled but the HTTP API disabled
+        // fails validation inside api_from_config.
+        let mut bad = quiet_config();
+        bad.upnp.enable_server = true;
+        bad.http_api.disable = true;
+
+        // The settings page persists the config before calling configure.
+        crate::config::write_config(&config_filename, &bad).unwrap();
+
+        let result = state.configure(bad.clone()).await;
+        assert!(result.is_err(), "invalid config must fail reconfigure");
+
+        // The shared config still reflects what was applied...
+        assert!(state.config() == bad);
+        // ...and so does the file the settings page wrote before calling
+        // configure (verify by reading it back).
+        let persisted = crate::config::read_config(&config_filename).unwrap();
+        assert!(persisted == bad);
     }
 }

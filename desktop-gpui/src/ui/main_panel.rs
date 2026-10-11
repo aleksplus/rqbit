@@ -15,7 +15,6 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::component::{Theme, ThemeMode};
-use librqbit::AddTorrentOptions;
 use librqbit::api::{ApiTorrentListOpts, EmptyJsonResponse};
 use librqbit::session_stats::snapshot::SessionStatsSnapshot;
 use std::collections::HashSet;
@@ -24,7 +23,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::hooks::{HookEvent, TorrentAddedPayload, TorrentDeletedPayload, TorrentInfo, envelope};
+use crate::hooks::{HookEvent, TorrentDeletedPayload, TorrentInfo, envelope};
 use crate::state::State;
 use crate::ui::add_torrent_dialog::{
     AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry, AddTorrentSource,
@@ -509,6 +508,10 @@ impl MainPanel {
                                 match build_entry(&api, source).await {
                                     Ok(mut entry) => {
                                         apply_file_selection_hooks(&state, &mut entry).await;
+                                        // Remember where this torrent came from,
+                                        // so its source file can be moved to
+                                        // the configured folder after adding.
+                                        entry.source_path = Some(path);
                                         entries.push(entry);
                                     }
                                     Err(e) => {
@@ -589,8 +592,14 @@ impl MainPanel {
             &dialog,
             |this, _entity, event: &AddTorrentDialogEvent, cx| match event {
                 AddTorrentDialogEvent::Cancelled => this.close_dialog(cx),
-                AddTorrentDialogEvent::AddOne(source, selection, overwrite) => {
-                    this.confirm_add(source.clone(), selection.clone(), *overwrite, cx);
+                AddTorrentDialogEvent::AddOne(source, selection, overwrite, source_path) => {
+                    this.confirm_add(
+                        source.clone(),
+                        source_path.clone(),
+                        selection.clone(),
+                        *overwrite,
+                        cx,
+                    );
                 }
                 AddTorrentDialogEvent::Finished => this.close_dialog(cx),
             },
@@ -601,12 +610,14 @@ impl MainPanel {
     }
 
     /// Actually add a torrent, applying the selected file indices (if any),
-    /// then fire the `torrent_added` hook (skipped when the torrent was
-    /// already managed by the session — the API response does not
-    /// distinguish that case, so the hook watcher's known-ID set decides).
+    /// then refresh the table. The add itself (including the `torrent_added`
+    /// hook and moving the source file to the configured folder) goes through
+    /// [`HookDispatcher::add_and_dispatch_added`], the shared path also used
+    /// by the folder watcher.
     fn confirm_add(
         &mut self,
         source: AddTorrentSource,
+        source_path: Option<std::path::PathBuf>,
         selection: Option<Vec<usize>>,
         overwrite: bool,
         cx: &mut Context<Self>,
@@ -614,38 +625,18 @@ impl MainPanel {
         let api = self.state.api();
         let hooks = self.state.hooks();
         cx.spawn(async move |this, cx| {
-            let opts = Some(AddTorrentOptions {
-                only_files: selection.clone(),
-                overwrite,
-                ..Default::default()
-            });
-            match api.api_add_torrent(source.to_add(), opts).await {
-                Ok(response) => {
-                    if let Some(id) = response.id
-                        && !hooks.is_known(id)
-                    {
-                        hooks.prime_added(id);
-                        let files = response.details.files.as_deref().unwrap_or(&[]);
-                        hooks.dispatch(
-                            HookEvent::TorrentAdded,
-                            envelope(
-                                HookEvent::TorrentAdded,
-                                TorrentAddedPayload {
-                                    torrent: TorrentInfo {
-                                        id: Some(id),
-                                        name: response.details.name,
-                                        info_hash: response.details.info_hash,
-                                        output_folder: response.output_folder,
-                                    },
-                                    files_total: files.len(),
-                                    files_selected: files.iter().filter(|f| f.included).count(),
-                                    selected_indices: selection,
-                                },
-                            ),
-                        );
-                    }
-                }
-                Err(e) => eprintln!("Error adding torrent: {:?}", e),
+            if let Err(e) = hooks
+                .add_and_dispatch_added(
+                    &api,
+                    source.to_add(),
+                    selection,
+                    overwrite,
+                    false,
+                    source_path,
+                )
+                .await
+            {
+                eprintln!("Error adding torrent: {:?}", e);
             }
             let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
         })

@@ -61,6 +61,10 @@ pub struct RqbitDesktopConfigHooks {
 }
 
 // Config read/write functions
+fn default_true() -> bool {
+    true
+}
+
 pub fn read_config(path: &str) -> anyhow::Result<RqbitDesktopConfig> {
     use std::fs::File;
     use std::io::BufReader;
@@ -244,6 +248,21 @@ pub struct RqbitDesktopConfigUpnp {
 pub struct RqbitDesktopConfig {
     pub default_download_location: PathBuf,
 
+    /// Folder watched for new .torrent files to add automatically.
+    /// Empty means the feature is disabled.
+    #[serde(default)]
+    pub load_torrents_folder: PathBuf,
+
+    /// Whether torrents added automatically from the watch folder start
+    /// paused. They can then be started from the torrent list.
+    #[serde(default = "default_true")]
+    pub auto_add_paused: bool,
+
+    /// Folder to move .torrent files to after they were added.
+    /// Empty means the feature is disabled.
+    #[serde(default)]
+    pub move_torrents_folder: PathBuf,
+
     #[cfg(feature = "disable-upload")]
     #[serde(default)]
     pub disable_upload: bool,
@@ -274,6 +293,9 @@ impl Default for RqbitDesktopConfig {
 
         Self {
             default_download_location: download_folder,
+            load_torrents_folder: PathBuf::new(),
+            auto_add_paused: true,
+            move_torrents_folder: PathBuf::new(),
             dht: Default::default(),
             connections: Default::default(),
             upnp: Default::default(),
@@ -313,6 +335,13 @@ mod tests {
         let json = r#"{"default_download_location": "/tmp/dl"}"#;
         let cfg: RqbitDesktopConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.hooks.hooks.is_empty());
+    }
+
+    #[test]
+    fn old_config_without_auto_add_paused_defaults_to_true() {
+        let json = r#"{"default_download_location": "/tmp/dl"}"#;
+        let cfg: RqbitDesktopConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.auto_add_paused);
     }
 
     #[test]

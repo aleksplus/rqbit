@@ -36,8 +36,14 @@ pub enum AddTorrentDialogEvent {
     Cancelled,
     /// A single torrent should be added with the given selected file indices.
     /// `None` means "all files" (no selection restriction). The bool is whether
-    /// to overwrite existing files on disk.
-    AddOne(AddTorrentSource, Option<Vec<usize>>, bool),
+    /// to overwrite existing files on disk. The trailing path is the local
+    /// source file the torrent came from, if any (used for move-after-add).
+    AddOne(
+        AddTorrentSource,
+        Option<Vec<usize>>,
+        bool,
+        Option<std::path::PathBuf>,
+    ),
     /// All torrents have been processed; the dialog can close.
     Finished,
 }
@@ -50,6 +56,9 @@ pub struct AddTorrentEntry {
     pub info_hash: String,
     /// Destination folder resolved via `list_only`.
     pub output_folder: std::path::PathBuf,
+    /// The local file this entry was built from, if any. After a successful
+    /// add it is moved to the configured "move added torrents to" folder.
+    pub source_path: Option<std::path::PathBuf>,
     /// Resolved file rows. Empty means "add all files" (no selection UI).
     pub files: Vec<FileRow>,
     /// Names of hooks that pre-adjusted the file selection, shown as a hint.
@@ -145,6 +154,7 @@ impl AddTorrentDialog {
             entry.source,
             selection,
             self.overwrite,
+            entry.source_path,
         ));
 
         if self.entries.is_empty() {
