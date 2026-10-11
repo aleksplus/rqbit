@@ -4,7 +4,7 @@ use gpui_kit::component::separator::Separator;
 use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::component::{
-    IconName, Size, StyledExt, TitleBar,
+    Icon, IconName, Size, StyledExt, TitleBar,
     button::{Button, ButtonVariants},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -16,6 +16,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::component::{Theme, ThemeMode};
 use librqbit::api::{ApiTorrentListOpts, EmptyJsonResponse};
+use librqbit::dht::DhtStats;
 use librqbit::session_stats::snapshot::SessionStatsSnapshot;
 use std::collections::HashSet;
 use std::future::Future;
@@ -41,6 +42,40 @@ use crate::ui::utils::{build_entry, format_bytes, format_uptime, render_modal_ov
 /// the same output type.
 type TorrentApiActionFuture =
     Pin<Box<dyn Future<Output = librqbit::api::Result<EmptyJsonResponse>> + Send>>;
+
+/// DHT health for the footer indicator, derived from `Api::api_dht_stats`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DhtFooterStatus {
+    /// DHT is running and the routing table has nodes.
+    Connected { nodes: usize },
+    /// DHT is enabled but the routing table is empty (still bootstrapping,
+    /// or the bootstrap nodes are unreachable).
+    Connecting,
+    /// `api_dht_stats()` failed with something other than "disabled".
+    Error,
+    /// DHT is turned off in settings.
+    Disabled,
+}
+
+/// Map the result of `Api::api_dht_stats` to a footer status. A 404 is the
+/// API's "DHT is disabled" marker (`ApiError::dht_disabled`); any other
+/// error status is treated as a genuine failure.
+fn dht_footer_status(res: &librqbit::api::Result<DhtStats>) -> DhtFooterStatus {
+    match res {
+        Ok(stats) => {
+            let nodes = stats.routing_table_size + stats.routing_table_size_v6;
+            if nodes > 0 {
+                DhtFooterStatus::Connected { nodes }
+            } else {
+                DhtFooterStatus::Connecting
+            }
+        }
+        // `ApiError`'s kind is private, so identify `dht_disabled` by its
+        // NOT_FOUND status.
+        Err(e) if e.status().as_u16() == 404 => DhtFooterStatus::Disabled,
+        Err(_) => DhtFooterStatus::Error,
+    }
+}
 
 /// The modal dialog currently open, if any. At most one dialog can be open at
 /// a time; opening a new one replaces the previous.
@@ -82,6 +117,8 @@ pub struct MainPanel {
     pending_add_entries: Option<Vec<AddTorrentEntry>>,
     /// Latest session-wide stats for the footer (download/upload speed, uptime).
     footer_stats: Option<SessionStatsSnapshot>,
+    /// Latest DHT health for the footer (None until the first poll completes).
+    dht_status: Option<DhtFooterStatus>,
     /// Search box for filtering torrents by name.
     search_input: Entity<InputState>,
     /// Status filter dropdown (empty string = "All").
@@ -116,6 +153,7 @@ impl MainPanel {
             dialog: None,
             pending_add_entries: None,
             footer_stats: None,
+            dht_status: None,
             search_input: cx
                 .new(|_cx| InputState::new(window, _cx).placeholder("Search torrents…")),
             status_filter: cx.new(|_cx| {
@@ -216,12 +254,18 @@ impl MainPanel {
     /// When the window is inactive (minimized/hidden) the table refresh is
     /// throttled to a much longer interval to reduce unnecessary work.
     fn start_stats_polling(&mut self, cx: &mut Context<Self>) {
-        let api = self.state.api();
+        // Capture `State` rather than an `Arc<Api>`: `configure()` can rebuild
+        // the session, and a captured API handle would keep polling the
+        // stopped session forever.
+        let state = self.state.clone();
         let task = cx.spawn(async move |this, cx| {
             loop {
+                let api = state.api();
                 let stats = api.api_session_stats();
+                let dht_status = dht_footer_status(&api.api_dht_stats());
                 let _ = this.update(cx, |this, cx| {
                     this.footer_stats = Some(stats);
+                    this.dht_status = Some(dht_status);
                     cx.notify();
                 });
 
@@ -971,10 +1015,12 @@ impl MainPanel {
         overlays
     }
 
-    /// Render the footer showing session-wide download/upload speed and uptime.
+    /// Render the footer showing session-wide download/upload speed, DHT
+    /// health, and uptime.
     ///
     /// Uses the gpui-component [`StatusBar`] with three left-pinned groups
-    /// (download, upload, uptime) separated by vertical dividers.
+    /// (download, upload, DHT) and a right-pinned uptime, separated by
+    /// vertical dividers.
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (down_speed, up_speed, fetched, uploaded, uptime) = match &self.footer_stats {
             Some(stats) => (
@@ -991,6 +1037,16 @@ impl MainPanel {
                 "—".to_string(),
                 "—".to_string(),
             ),
+        };
+
+        let (dht_color, dht_text) = match self.dht_status {
+            Some(DhtFooterStatus::Connected { nodes }) => {
+                (cx.theme().success, format!("{nodes} nodes"))
+            }
+            Some(DhtFooterStatus::Connecting) => (cx.theme().warning, "connecting…".to_string()),
+            Some(DhtFooterStatus::Error) => (cx.theme().danger, "error".to_string()),
+            Some(DhtFooterStatus::Disabled) => (cx.theme().muted_foreground, "off".to_string()),
+            None => (cx.theme().muted_foreground, "—".to_string()),
         };
 
         StatusBar::new()
@@ -1022,6 +1078,20 @@ impl MainPanel {
                     ),
             )
             .left(Separator::vertical())
+            // DHT health: green = nodes in the routing table, yellow =
+            // enabled but no nodes yet, red = API error, gray = disabled.
+            .left(
+                h_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(Icon::new(IconName::Network).text_color(dht_color))
+                    .child(div().font_medium().child("DHT"))
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(dht_text),
+                    ),
+            )
             // Uptime
             .right(
                 h_flex()
@@ -1036,5 +1106,55 @@ impl MainPanel {
 impl Focusable for MainPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Import only what the tests use: a `use super::*` glob would re-import
+    // the `test` attribute macro from the parent's `use gpui::*` glob (the
+    // test-support feature re-exports it), shadowing the built-in `#[test]`
+    // and recursing during expansion.
+    use super::{DhtFooterStatus, DhtStats, dht_footer_status};
+
+    fn dht_stats(v4: usize, v6: usize) -> DhtStats {
+        DhtStats {
+            id: librqbit::dht::Id20::new([0; 20]),
+            outstanding_requests: 0,
+            routing_table_size: v4,
+            routing_table_size_v6: v6,
+        }
+    }
+
+    #[test]
+    fn dht_status_connected_sums_routing_tables() {
+        assert_eq!(
+            dht_footer_status(&Ok(dht_stats(39, 3))),
+            DhtFooterStatus::Connected { nodes: 42 }
+        );
+    }
+
+    #[test]
+    fn dht_status_connecting_when_routing_table_empty() {
+        assert_eq!(
+            dht_footer_status(&Ok(dht_stats(0, 0))),
+            DhtFooterStatus::Connecting
+        );
+    }
+
+    #[test]
+    fn dht_status_disabled_on_not_found_error() {
+        assert_eq!(
+            dht_footer_status(&Err(librqbit::ApiError::dht_disabled())),
+            DhtFooterStatus::Disabled
+        );
+    }
+
+    #[test]
+    fn dht_status_error_on_other_error_statuses() {
+        assert_eq!(
+            dht_footer_status(&Err(librqbit::ApiError::unauthorized())),
+            DhtFooterStatus::Error
+        );
     }
 }
