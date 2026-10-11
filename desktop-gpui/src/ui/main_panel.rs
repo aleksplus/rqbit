@@ -30,6 +30,7 @@ use crate::ui::add_torrent_dialog::{
 };
 
 use crate::ui::dialogs::{DeleteDialog, DeleteDialogEvent, MagnetDialog, MagnetDialogEvent};
+use crate::ui::log_page::{LogPage, LogPageEvent};
 use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
 use crate::ui::torrent_table::{TorrentAction, TorrentRow, TorrentTableDelegate};
@@ -49,6 +50,13 @@ enum ActiveDialog {
     Add(Entity<AddTorrentDialog>),
 }
 
+/// The full page (replacing the torrent list) currently open, if any. At most
+/// one page can be open at a time; opening a new one replaces the previous.
+enum ActivePage {
+    Settings(Entity<SettingsPage>),
+    Logs(Entity<LogPage>),
+}
+
 /// Run configured `file_selection` hooks against an entry's resolved file
 /// list and record which ones changed the selection (shown as a hint in the
 /// add dialog). A no-op when no such hooks are enabled.
@@ -64,7 +72,7 @@ pub struct MainPanel {
     state: Arc<State>,
     table_state: Entity<TableState<TorrentTableDelegate>>,
     resizable_state: Entity<ResizableState>,
-    settings_sidebar: Option<Entity<SettingsPage>>,
+    active_page: Option<ActivePage>,
     detail_panel: Option<Entity<TorrentDetailPanel>>,
     /// Torrent ID waiting for detail panel creation (deferred until window is available in render).
     pending_detail_id: Option<usize>,
@@ -102,7 +110,7 @@ impl MainPanel {
                 .row_selectable(true)
             }),
             resizable_state: cx.new(|_cx| ResizableState::default()),
-            settings_sidebar: None,
+            active_page: None,
             detail_panel: None,
             pending_detail_id: None,
             dialog: None,
@@ -678,16 +686,29 @@ impl MainPanel {
         cx.subscribe(
             &page,
             |this, _entity, event: &SettingsPageEvent, cx| match event {
-                SettingsPageEvent::Back => this.close_settings(cx),
+                SettingsPageEvent::Back => this.close_page(cx),
             },
         )
         .detach();
-        self.settings_sidebar = Some(page);
+        self.active_page = Some(ActivePage::Settings(page));
         cx.notify();
     }
 
-    fn close_settings(&mut self, cx: &mut Context<Self>) {
-        self.settings_sidebar = None;
+    fn on_logs(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let page = cx.new(|cx| LogPage::new(_window, cx, self.state.clone()));
+        cx.subscribe(
+            &page,
+            |this, _entity, event: &LogPageEvent, cx| match event {
+                LogPageEvent::Back => this.close_page(cx),
+            },
+        )
+        .detach();
+        self.active_page = Some(ActivePage::Logs(page));
+        cx.notify();
+    }
+
+    fn close_page(&mut self, cx: &mut Context<Self>) {
+        self.active_page = None;
         cx.notify();
     }
 
@@ -736,7 +757,7 @@ impl Render for MainPanel {
             .size_full()
             .gap_0()
             .child(self.render_title_bar(cx))
-            .when(self.settings_sidebar.is_none(), |this| {
+            .when(self.active_page.is_none(), |this| {
                 this.child(self.render_toolbar(cx))
             })
             .child(self.render_content(cx))
@@ -794,6 +815,14 @@ impl MainPanel {
                             .on_click(
                                 cx.listener(|this, _, window, cx| this.on_settings(window, cx)),
                             ),
+                    )
+                    .child(
+                        Button::new("logs")
+                            .icon(IconName::SquareTerminal)
+                            .small()
+                            .ghost()
+                            .tooltip("Log viewer")
+                            .on_click(cx.listener(|this, _, window, cx| this.on_logs(window, cx))),
                     )
                     .child(
                         Button::new("theme")
@@ -882,43 +911,44 @@ impl MainPanel {
             )
     }
 
-    /// Render the main content area: the settings page when open, otherwise
-    /// the resizable split of torrent table (left) + detail panel (right,
-    /// conditional).
+    /// Render the main content area: the settings or log viewer page when
+    /// open, otherwise the resizable split of torrent table (left) + detail
+    /// panel (right, conditional).
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .flex_1()
-            .min_h_0()
-            .child(if let Some(settings) = &self.settings_sidebar {
-                // Settings page replaces the main content.
+        div().flex_1().min_h_0().child(match &self.active_page {
+            // Pages replace the main content.
+            Some(ActivePage::Settings(settings)) => {
                 div().size_full().child(settings.clone()).into_any_element()
-            } else {
-                v_resizable("main-split")
-                    .with_state(&self.resizable_state)
-                    .child(
-                        resizable_panel().child(
-                            div()
-                                .size_full()
-                                .overflow_hidden()
-                                .border_1()
-                                .border_color(cx.theme().border)
-                                .child(DataTable::new(&self.table_state).bordered(false)),
+            }
+            Some(ActivePage::Logs(logs)) => {
+                div().size_full().child(logs.clone()).into_any_element()
+            }
+            None => v_resizable("main-split")
+                .with_state(&self.resizable_state)
+                .child(
+                    resizable_panel().child(
+                        div()
+                            .size_full()
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(cx.theme().border)
+                            .child(DataTable::new(&self.table_state).bordered(false)),
+                    ),
+                )
+                .child(
+                    resizable_panel()
+                        .visible(self.detail_panel.is_some())
+                        .size(px(400.))
+                        .size_range(px(250.)..px(800.))
+                        .child(
+                            self.detail_panel
+                                .clone()
+                                .map(|p| p.into_any_element())
+                                .unwrap_or_else(|| div().into_any_element()),
                         ),
-                    )
-                    .child(
-                        resizable_panel()
-                            .visible(self.detail_panel.is_some())
-                            .size(px(400.))
-                            .size_range(px(250.)..px(800.))
-                            .child(
-                                self.detail_panel
-                                    .clone()
-                                    .map(|p| p.into_any_element())
-                                    .unwrap_or_else(|| div().into_any_element()),
-                            ),
-                    )
-                    .into_any_element()
-            })
+                )
+                .into_any_element(),
+        })
     }
 
     /// Render the modal overlay for the open dialog (magnet, delete, or add),
