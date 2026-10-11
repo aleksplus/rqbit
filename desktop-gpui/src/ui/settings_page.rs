@@ -997,21 +997,24 @@ impl Render for SettingsPage {
             .child(
                 h_flex()
                     .gap_2()
-                    .pl(px(78.))
-                    .pr_2()
-                    .py_2()
+                    .pl(px(10.))
+                    .pt(px(5.))
+                    .pr(px(10.))
+                    .pb(px(5.))
                     .bg(theme.background)
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
                         Button::new("settings-back")
                             .label("← Back")
+                            .small()
                             .on_click(cx.listener(|this, _, _, cx| this.on_back(cx))),
                     )
                     .child(
                         Button::new("settings-reset")
                             .label("Reset to Default")
                             .disabled(applying)
+                            .small()
                             .on_click(cx.listener(|this, _, _, cx| this.on_reset(cx))),
                     )
                     .child(
@@ -1020,6 +1023,7 @@ impl Render for SettingsPage {
                                 .primary()
                                 .label(if applying { "Applying…" } else { "Apply" })
                                 .disabled(applying)
+                                .small()
                                 .on_click(cx.listener(|this, _, window, cx| this.on_apply(window, cx))),
                         ),
                     ),
