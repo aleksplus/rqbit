@@ -312,25 +312,29 @@ impl Render for LogPage {
             .child(
                 h_flex()
                     .gap_2()
-                    .pl(px(78.))
-                    .pr_2()
-                    .py_2()
+                    .pl(px(10.))
+                    .pt(px(5.))
+                    .pr(px(10.))
+                    .pb(px(5.))
                     .bg(theme.background)
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
                         Button::new("log-back")
+                            .small()
                             .label("← Back")
                             .on_click(cx.listener(|this, _, _, cx| this.on_back(cx))),
                     )
                     .child(
                         Button::new("log-clear")
+                            .small()
                             .label("Clear")
                             .on_click(cx.listener(|this, _, window, cx| this.on_clear(window, cx))),
                     )
                     .when(unapplied > 0, |this| {
                         this.child(
                             Button::new("log-resume")
+                                .small()
                                 .primary()
                                 .label(format!("↓ {unapplied} new lines"))
                                 .on_click(
@@ -357,6 +361,7 @@ impl Render for LogPage {
                             )
                             .child(
                                 Button::new("log-apply")
+                                    .small()
                                     .primary()
                                     .label("Apply")
                                     .tooltip(
