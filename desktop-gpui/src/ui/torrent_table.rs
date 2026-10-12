@@ -3,7 +3,10 @@
 use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
-use gpui_kit::component::{checkbox::Checkbox, h_flex, menu::PopupMenuItem, progress::Progress};
+use gpui_kit::component::{
+    ActiveTheme as _, checkbox::Checkbox, h_flex, menu::PopupMenuItem, progress::Progress,
+};
+use librqbit::TorrentStatsState;
 use librqbit::api::TorrentDetailsResponse;
 use std::collections::HashSet;
 
@@ -16,6 +19,23 @@ use crate::ui::utils::{format_bytes, format_speed, torrent_action_menu_item};
 pub enum TorrentAction {
     Pause,
     Start,
+}
+
+/// Visual tone for a torrent row, derived from the torrent state. Drives
+/// row-level styling: paused rows render with dimmed text, and the progress
+/// bar fills green while downloading and red on error.
+#[derive(Clone, Copy, PartialEq)]
+pub enum RowTone {
+    /// Default appearance.
+    Normal,
+    /// Paused (or initializing in a paused holding state): dimmed row text.
+    Paused,
+    /// Live and not yet finished downloading: green progress bar.
+    Downloading,
+    /// Live and finished (seeding): default progress bar.
+    Seeding,
+    /// Errored: red progress bar.
+    Error,
 }
 
 /// Simplified torrent row data that implements Clone.
@@ -33,6 +53,8 @@ pub struct TorrentRow {
     /// 0.0–100.0
     pub progress_raw: f64,
     pub peers: String,
+    /// Derived visual tone used for row styling (dim text, bar colors).
+    pub tone: RowTone,
     /// Live peer count (connected), used for sorting.
     pub peers_raw: u32,
     pub down_speed: String,
@@ -73,6 +95,20 @@ impl TorrentRow {
             }
         });
 
+        // Visual tone for row styling. Initializing torrents that are paused
+        // count as paused (e.g. watched-folder torrents are added that way).
+        let tone = match stats {
+            None => RowTone::Normal,
+            Some(s) => match s.state {
+                TorrentStatsState::Error => RowTone::Error,
+                TorrentStatsState::Paused => RowTone::Paused,
+                TorrentStatsState::Initializing { paused: true } => RowTone::Paused,
+                TorrentStatsState::Initializing { paused: false } => RowTone::Normal,
+                TorrentStatsState::Live if !s.finished => RowTone::Downloading,
+                TorrentStatsState::Live => RowTone::Seeding,
+            },
+        };
+
         Self {
             id: t.id.unwrap_or(0),
             name: t.name.clone().unwrap_or_else(|| t.info_hash.clone()),
@@ -95,6 +131,7 @@ impl TorrentRow {
             peers_raw: live.map_or(0, |l| l.snapshot.peer_stats.live),
             down_speed: live.map_or_else(|| "N/A".into(), |l| format_speed(l.download_speed.mbps)),
             down_speed_raw: live.map_or(0.0, |l| l.download_speed.as_bytes() as f64),
+            tone,
             up_speed: live.map_or_else(|| "N/A".into(), |l| format_speed(l.upload_speed.mbps)),
             up_speed_raw: live.map_or(0.0, |l| l.upload_speed.as_bytes() as f64),
             downloaded: stats.map_or_else(|| "N/A".into(), |s| format_bytes(s.progress_bytes)),
@@ -317,17 +354,24 @@ impl TableDelegate for TorrentTableDelegate {
             }
             "name" => div().child(row.name.clone()),
             "state" => div().child(row.state.clone()),
-            "progress" => h_flex()
-                .justify_between()
-                .gap_2()
-                .child(
-                    div()
-                        .child(
-                            Progress::new(("progress-bar", row_ix)).value(row.progress_raw as f32),
-                        )
-                        .min_w(px(70.)),
-                )
-                .child(div().child(row.progress.clone())),
+            "progress" => {
+                // Green while downloading, red on error; other tones keep the
+                // theme's default fill.
+                let bar = match row.tone {
+                    RowTone::Error => Progress::new(("progress-bar", row_ix))
+                        .value(row.progress_raw as f32)
+                        .color(cx.theme().danger),
+                    RowTone::Downloading => Progress::new(("progress-bar", row_ix))
+                        .value(row.progress_raw as f32)
+                        .color(cx.theme().success),
+                    _ => Progress::new(("progress-bar", row_ix)).value(row.progress_raw as f32),
+                };
+                h_flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(div().child(bar).min_w(px(70.)))
+                    .child(div().child(row.progress.clone()))
+            }
             "peers" => div().child(row.peers.clone()),
             "down" => div().child(row.down_speed.clone()),
             "downloaded" => div().child(row.downloaded.clone()),
@@ -408,8 +452,17 @@ impl TableDelegate for TorrentTableDelegate {
         cx: &mut Context<TableState<Self>>,
     ) -> Stateful<Div> {
         let is_selected = self.selected_rows.contains(&row_ix);
+        // Paused torrents render with dimmed text; the color inherits into
+        // every cell of the row. Hoisted out of the style chain so the
+        // closure doesn't need to borrow `cx`.
+        let is_paused = self
+            .rows
+            .get(row_ix)
+            .is_some_and(|r| r.tone == RowTone::Paused);
+        let dimmed_text = cx.theme().muted_foreground;
         div()
             .id(("torrent-row", row_ix))
+            .when(is_paused, |this| this.text_color(dimmed_text))
             .when(is_selected, |this| this.bg(gpui::rgb(0x2a2a3e)))
             .on_mouse_down(
                 MouseButton::Left,
