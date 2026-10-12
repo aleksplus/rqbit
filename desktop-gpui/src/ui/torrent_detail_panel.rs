@@ -1,8 +1,9 @@
 use gpui::*;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable,
+    ActiveTheme as _, IconName, Sizable, WindowExt as _,
     button::{Button, ButtonVariants},
     h_flex,
+    notification::Notification,
     scroll::ScrollableElement,
     tab::{Tab, TabBar},
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
@@ -13,6 +14,7 @@ use librqbit::api::{
     PeerStatsFilter, PeerStatsFilterState, PeerStatsSnapshot, TorrentDetailsResponse,
 };
 use std::collections::HashSet;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,6 +59,10 @@ pub struct TorrentDetailPanel {
     /// Keeps the periodic peer-stats polling task alive for the lifetime of the panel.
     _peer_task: Option<Task<()>>,
 }
+
+/// Marker type so repeated "playlist copied" notifications replace each other
+/// instead of stacking up.
+struct PlaylistCopiedNotice;
 
 impl EventEmitter<TorrentDetailPanelEvent> for TorrentDetailPanel {}
 
@@ -373,6 +379,65 @@ impl TorrentDetailPanel {
         .detach();
     }
 
+    /// The playlist URL (M3U8) served by the HTTP API for this torrent,
+    /// mirroring the webui's `getPlaylistUrl`: `{http-api}/torrents/{id}/playlist`.
+    /// Returns `None` when the HTTP API is disabled, in which case the playlist
+    /// is unavailable.
+    fn playlist_url(&self) -> Option<String> {
+        let http_api = &self.state.config().http_api;
+        if http_api.disable {
+            return None;
+        }
+        Some(playlist_http_url(http_api.listen_addr, self.torrent_id))
+    }
+
+    /// Copy the playlist URL to the clipboard and show a green notification
+    /// (mirroring the webui's "Copied" alert).
+    fn copy_playlist_url_to_clipboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = self.playlist_url() else {
+            return;
+        };
+        cx.write_to_clipboard(ClipboardItem::new_string(url));
+        window.push_notification(
+            Notification::success("Playlist URL copied to clipboard. Paste into e.g. VLC to play.")
+                .title("Copied")
+                .id::<PlaylistCopiedNotice>(),
+            cx,
+        );
+    }
+
+    /// The "Playlist" row in the General section, mirroring the webui's
+    /// `PlaylistLink`: a link that copies the playlist URL to the clipboard
+    /// (paste into e.g. VLC to play), or "Unavailable" when the HTTP API is
+    /// disabled.
+    fn render_playlist_row(&self, cx: &mut Context<Self>) -> Div {
+        let theme = cx.theme().clone();
+
+        let value = match self.playlist_url() {
+            None => div()
+                .text_color(theme.muted_foreground)
+                .child("Unavailable")
+                .into_any_element(),
+            Some(_) => Button::new("playlist-copy-link")
+                .link()
+                .label("Copy playlist URL")
+                .on_click(cx.listener(|this, _, window, cx| {
+                    this.copy_playlist_url_to_clipboard(window, cx);
+                }))
+                .into_any_element(),
+        };
+
+        h_flex()
+            .gap_2()
+            .child(
+                div()
+                    .w(px(140.))
+                    .text_color(theme.muted_foreground)
+                    .child("Playlist"),
+            )
+            .child(value)
+    }
+
     fn render_overview(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme().clone();
         let name = self
@@ -479,6 +544,7 @@ impl TorrentDetailPanel {
                     )
                     .child(info_row("Info Hash", info_hash))
                     .child(info_row("Output Folder", output_folder))
+                    .child(self.render_playlist_row(cx))
                     .child(info_row("Total Pieces", total_pieces.to_string()))
                     .child(info_row("State", state_str))
                     .children(self.comment.as_ref().map(|comment| {
@@ -789,4 +855,73 @@ fn info_row(label: impl Into<String>, value: impl Into<String>) -> Div {
                 .child(label),
         )
         .child(div().flex_1().child(value))
+}
+
+/// Build the playlist URL served by the HTTP API for a torrent, mirroring the
+/// webui's `getPlaylistUrl`: `{http-api-base}/torrents/{id}/playlist`. An
+/// unspecified listen address (0.0.0.0 / ::) is replaced with the loopback
+/// address so the URL works from the local machine.
+fn playlist_http_url(listen_addr: SocketAddr, torrent_id: usize) -> String {
+    let host = match listen_addr.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => "127.0.0.1".to_string(),
+        IpAddr::V6(v6) => {
+            let v6 = if v6.is_unspecified() {
+                Ipv6Addr::LOCALHOST
+            } else {
+                v6
+            };
+            format!("[{v6}]")
+        }
+        ip => ip.to_string(),
+    };
+    format!(
+        "http://{host}:{}/torrents/{torrent_id}/playlist",
+        listen_addr.port()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    // Import only what the tests use: a `use super::*` glob would re-import
+    // the `test` attribute macro from the parent's `use gpui::*` glob (the
+    // test-support feature re-exports it), shadowing the built-in `#[test]`
+    // and recursing during expansion.
+    use super::playlist_http_url;
+    use std::net::SocketAddr;
+
+    fn addr(s: &str) -> SocketAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn playlist_url_loopback_v4() {
+        assert_eq!(
+            playlist_http_url(addr("127.0.0.1:3030"), 3),
+            "http://127.0.0.1:3030/torrents/3/playlist"
+        );
+    }
+
+    #[test]
+    fn playlist_url_keeps_non_loopback_address() {
+        assert_eq!(
+            playlist_http_url(addr("192.168.1.5:3030"), 42),
+            "http://192.168.1.5:3030/torrents/42/playlist"
+        );
+    }
+
+    #[test]
+    fn playlist_url_replaces_unspecified_v4_with_loopback() {
+        assert_eq!(
+            playlist_http_url(addr("0.0.0.0:1234"), 0),
+            "http://127.0.0.1:1234/torrents/0/playlist"
+        );
+    }
+
+    #[test]
+    fn playlist_url_replaces_unspecified_v6_with_loopback() {
+        assert_eq!(
+            playlist_http_url(addr("[::]:1234"), 7),
+            "http://[::1]:1234/torrents/7/playlist"
+        );
+    }
 }
