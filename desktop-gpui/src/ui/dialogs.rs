@@ -21,7 +21,6 @@ pub enum DeleteDialogEvent {
 pub struct DeleteDialog {
     ids: Vec<usize>,
     names: Vec<String>,
-    is_bulk: bool,
     delete_files: bool,
     focus_handle: FocusHandle,
 }
@@ -36,12 +35,17 @@ impl DeleteDialog {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
-            is_bulk: ids.len() > 1,
             ids,
             names,
             delete_files: true,
             focus_handle: cx.focus_handle(),
         }
+    }
+
+    /// Whether this dialog confirms deletion of multiple torrents. Derived
+    /// from `ids` so it can never drift out of sync with the actual set.
+    fn is_bulk(&self) -> bool {
+        self.ids.len() > 1
     }
 
     fn on_cancel(&mut self, cx: &mut Context<Self>) {
@@ -66,13 +70,13 @@ impl Render for DeleteDialog {
                 div()
                     .text_size(px(16.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(if self.is_bulk {
+                    .child(if self.is_bulk() {
                         format!("Delete {} torrents", self.ids.len())
                     } else {
                         "Delete torrent".to_string()
                     }),
             )
-            .child(div().child(if self.is_bulk {
+            .child(div().child(if self.is_bulk() {
                 "Are you sure you want to delete the following torrents?"
             } else {
                 "Are you sure you want to delete this torrent?"
@@ -113,7 +117,7 @@ impl Render for DeleteDialog {
                     .child(
                         Button::new("del-ok")
                             .danger()
-                            .label(if self.is_bulk {
+                            .label(if self.is_bulk() {
                                 format!("Delete {} Torrents", self.ids.len())
                             } else {
                                 "Delete Torrent".to_string()
