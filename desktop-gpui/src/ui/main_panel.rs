@@ -159,7 +159,7 @@ impl MainPanel {
             status_filter: cx.new(|_cx| {
                 SelectState::new(
                     SearchableVec::new(vec![
-                        "".to_string(),
+                        "all".to_string(),
                         "initializing".to_string(),
                         "live".to_string(),
                         "paused".to_string(),
@@ -940,10 +940,10 @@ impl MainPanel {
                     .gap_2()
                     .child(
                         Select::new(&self.status_filter)
+                            .cleanable(true)
                             .with_size(Size::Small)
                             .placeholder("All statuses")
-                            .w(px(100.))
-                            .size_full(),
+                            .w(px(160.)),
                     )
                     .child(
                         Input::new(&self.search_input)
