@@ -4,7 +4,8 @@ use gpui::prelude::FluentBuilder as _;
 use gpui::*;
 use gpui_kit::component::table::{Column, ColumnSort, TableDelegate, TableState};
 use gpui_kit::component::{
-    ActiveTheme as _, checkbox::Checkbox, h_flex, menu::PopupMenuItem, progress::Progress,
+    ActiveTheme as _, Icon, IconName, Sizable as _, checkbox::Checkbox, h_flex,
+    menu::PopupMenuItem, progress::Progress,
 };
 use librqbit::TorrentStatsState;
 use librqbit::api::TorrentDetailsResponse;
@@ -353,7 +354,30 @@ impl TableDelegate for TorrentTableDelegate {
                     )
             }
             "name" => div().child(row.name.clone()),
-            "state" => div().child(row.state.clone()),
+            "state" => {
+                // Status icon tinted by tone: green arrows while live (down
+                // while downloading, up when seeding after completion), a
+                // dimmed pause icon when paused (matching the row's dimmed
+                // text), and red on error.
+                let theme = cx.theme();
+                let icon = match row.tone {
+                    RowTone::Downloading => {
+                        Some(Icon::new(IconName::ArrowDown).text_color(theme.blue_light))
+                    }
+                    RowTone::Seeding => {
+                        Some(Icon::new(IconName::ArrowUp).text_color(theme.success))
+                    }
+                    RowTone::Paused => {
+                        Some(Icon::new(IconName::Pause).text_color(theme.muted_foreground))
+                    }
+                    RowTone::Error => Some(Icon::new(IconName::CircleX).text_color(theme.danger)),
+                    RowTone::Normal => None,
+                };
+                h_flex()
+                    .gap_1()
+                    .when_some(icon, |this, icon| this.child(icon.small()))
+                    .child(div().child(row.state.clone()))
+            }
             "progress" => {
                 // Green while downloading, red on error; other tones keep the
                 // theme's default fill.
@@ -363,7 +387,7 @@ impl TableDelegate for TorrentTableDelegate {
                         .color(cx.theme().danger),
                     RowTone::Downloading => Progress::new(("progress-bar", row_ix))
                         .value(row.progress_raw as f32)
-                        .color(cx.theme().success),
+                        .color(cx.theme().blue_light),
                     _ => Progress::new(("progress-bar", row_ix)).value(row.progress_raw as f32),
                 };
                 h_flex()
