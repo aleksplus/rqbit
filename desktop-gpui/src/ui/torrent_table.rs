@@ -290,7 +290,11 @@ impl TableDelegate for TorrentTableDelegate {
             "select" => {
                 let checked = self.selected_rows.contains(&row_ix);
                 let table_state = cx.entity().clone();
+                // Fill the cell so the checkbox centers in both axes, matching
+                // the header checkbox (a block child would otherwise only
+                // stretch horizontally and stay top-aligned).
                 div()
+                    .size_full()
                     .flex()
                     .items_center()
                     .justify_center()
@@ -346,6 +350,7 @@ impl TableDelegate for TorrentTableDelegate {
             let total = self.rows.len();
             let table_state = cx.entity().clone();
             return div()
+                .size_full()
                 .flex()
                 .items_center()
                 .justify_center()
