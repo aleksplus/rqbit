@@ -1,20 +1,18 @@
-//! Shared formatting helpers for the desktop UI.
+//! Shared formatting helpers and small glue for the torrent UI.
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use gpui::{
     App, Context, Entity, InteractiveElement, IntoElement, MouseButton, ParentElement, Pixels,
     Render, Styled, div, px,
 };
 use gpui_kit::component::{ActiveTheme, menu::PopupMenuItem, v_flex};
-use librqbit::AddTorrentOptions;
 
-use crate::State;
+use rqbit_protocol::{TorrentAction, TorrentId};
+
+use crate::client::{AddTorrentRequest, TorrentClient, UiAddSource};
 use crate::ui::{
-    add_torrent_dialog::{AddTorrentEntry, AddTorrentSource},
-    file_table::FileRow,
-    main_panel::MainPanel,
-    torrent_table::TorrentAction,
+    add_torrent_dialog::AddTorrentEntry, file_table::FileRow, main_panel::MainPanel,
 };
 
 /// Binary unit multipliers (powers of 1024), computed once and reused.
@@ -71,21 +69,35 @@ pub fn format_uptime(seconds: u64) -> String {
     }
 }
 
+/// Format an ETA in seconds the same way librqbit's
+/// `DurationWithHumanReadable` does (`2h 3m`, `3m 4s`, `5s`).
+pub fn format_eta(seconds: u64) -> String {
+    let hours = seconds / 3600;
+    let minutes = (seconds % 3600) / 60;
+    let secs = seconds % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes}m")
+    } else if minutes > 0 {
+        format!("{minutes}m {secs}s")
+    } else {
+        format!("{secs}s")
+    }
+}
+
 /// Build a context-menu item that runs a pause/start action on a torrent.
 pub fn torrent_action_menu_item(
     label: String,
     torrent_id: usize,
     action: TorrentAction,
+    client: Arc<dyn TorrentClient>,
 ) -> PopupMenuItem {
     PopupMenuItem::new(label).on_click(move |_, _, cx: &mut App| {
-        let api = cx.global::<State>().api();
-        cx.spawn(async move |_| match action {
-            TorrentAction::Pause => {
-                let _ = api.api_torrent_action_pause(torrent_id.into()).await;
-            }
-            TorrentAction::Start => {
-                let _ = api.api_torrent_action_start(torrent_id.into()).await;
-            }
+        let client = client.clone();
+        let action = action.clone();
+        cx.spawn(async move |_| {
+            let _ = client
+                .action(&TorrentId::Id(torrent_id as u64), action)
+                .await;
         })
         .detach();
     })
@@ -132,46 +144,50 @@ pub fn render_modal_overlay<E: Render + 'static>(
         )
 }
 
-/// Build an [`AddTorrentEntry`] by resolving the torrent's file list via
-/// `list_only`. If the file list can't be resolved (e.g. a magnet that can't
-/// be fetched right now), the entry is created with no files so it will be
-/// added with all files selected.
+/// Build an [`AddTorrentEntry`] by resolving the torrent's file list via a
+/// list-only add. If the file list can't be resolved (e.g. a magnet that
+/// can't be fetched right now), the entry is created with no files so it will
+/// be added with all files selected.
 pub async fn build_entry(
-    api: &librqbit::Api,
-    source: AddTorrentSource,
-) -> anyhow::Result<AddTorrentEntry> {
-    let list_opts = AddTorrentOptions {
-        list_only: true,
-        ..Default::default()
-    };
-    let response = api
-        .api_add_torrent(source.to_add(), Some(list_opts))
+    client: &dyn TorrentClient,
+    source: UiAddSource,
+) -> Result<AddTorrentEntry, rqbit_protocol::ProtoError> {
+    let response = client
+        .add_torrent(&AddTorrentRequest {
+            source: source.clone(),
+            only_files: None,
+            overwrite: false,
+            paused: false,
+            list_only: true,
+            source_hint: None,
+        })
         .await?;
     let name = response
         .details
         .name
         .clone()
         .unwrap_or_else(|| response.details.info_hash.clone());
-    let output_folder = PathBuf::from(response.output_folder);
     let files: Vec<FileRow> = response
         .details
         .files
+        .clone()
         .unwrap_or_default()
-        .into_iter()
+        .iter()
         .enumerate()
         .map(|(idx, f)| {
             // Reconstruct the on-disk path from the output folder and the
             // torrent's relative file components, then check if it exists.
-            let mut full_path = output_folder.clone();
+            // (Hosts without a filesystem resolve `exists` to false.)
+            let mut full_path = std::path::PathBuf::from(&response.output_folder);
             for component in &f.components {
                 full_path.push(component);
             }
-            let exists = !f.attributes.padding && full_path.exists();
+            let exists = !f.padding && full_path.exists();
             FileRow {
                 file_index: idx,
-                name: f.name,
+                name: f.name.clone(),
                 length: f.length,
-                included: true,
+                included: f.included,
                 exists,
                 progress: 0,
             }
@@ -180,8 +196,8 @@ pub async fn build_entry(
     Ok(AddTorrentEntry {
         source,
         name,
-        info_hash: response.details.info_hash,
-        output_folder,
+        info_hash: response.details.info_hash.clone(),
+        output_folder: std::path::PathBuf::from(&response.output_folder),
         source_path: None,
         files,
         hook_note: None,

@@ -48,6 +48,12 @@ pub struct FileTableDelegate {
     sort_dir: ColumnSort,
 }
 
+impl Default for FileTableDelegate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileTableDelegate {
     pub fn new() -> Self {
         Self {

@@ -232,6 +232,9 @@ impl State {
         self.shared.clone()
     }
 
+    /// Convenience accessor; the shared views go through `LocalClient`
+    /// instead, so this is only exercised by tests today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn api(&self) -> Arc<Api> {
         self.shared.read().api()
     }

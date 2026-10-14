@@ -7,20 +7,15 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, checkbox::Checkbox, h_flex,
     menu::PopupMenuItem, progress::Progress,
 };
-use librqbit::TorrentStatsState;
-use librqbit::api::TorrentDetailsResponse;
 use std::collections::HashSet;
+use std::sync::Arc;
 
-use crate::State;
+use rqbit_protocol::{TorrentDetails, TorrentState};
+
+use crate::client::TorrentClient;
+use crate::host::UiHost;
 use crate::ui::main_panel::MainPanel;
-use crate::ui::utils::{format_bytes, format_speed, torrent_action_menu_item};
-
-/// Pause/start actions that can be applied to selected torrents.
-#[derive(Clone, Copy)]
-pub enum TorrentAction {
-    Pause,
-    Start,
-}
+use crate::ui::utils::{format_bytes, format_eta, format_speed, torrent_action_menu_item};
 
 /// Visual tone for a torrent row, derived from the torrent state. Drives
 /// row-level styling: paused rows render with dimmed text, and the progress
@@ -46,7 +41,7 @@ pub enum RowTone {
 /// directly, avoiding lossy re-parsing of formatted strings.
 #[derive(Clone)]
 pub struct TorrentRow {
-    pub id: usize,
+    pub id: u64,
     pub name: String,
     pub state: String,
     /// Display string, e.g. "42.1%".
@@ -76,15 +71,15 @@ pub struct TorrentRow {
 }
 
 impl TorrentRow {
-    /// Build a display row from a torrent-list API entry.
+    /// Build a display row from a torrent-list entry.
     ///
     /// Data is tiered: `id`/`name` are always present, size and progress fields
     /// need `stats`, and peer/speed/ETA fields additionally need live stats.
     /// Fields whose tier is missing get placeholder display strings ("N/A",
     /// "—", "Unknown") with zeroed/`None` raw values so sorting still behaves
     /// sensibly.
-    pub fn from_listed(t: &TorrentDetailsResponse) -> Self {
-        let stats = t.stats.as_ref();
+    pub fn from_details(t: &TorrentDetails) -> Self {
+        let stats = t.stats.as_deref();
         let live = stats.and_then(|s| s.live.as_ref());
 
         // Progress percentage; a torrent with unknown total size counts as 0%.
@@ -101,12 +96,12 @@ impl TorrentRow {
         let tone = match stats {
             None => RowTone::Normal,
             Some(s) => match s.state {
-                TorrentStatsState::Error => RowTone::Error,
-                TorrentStatsState::Paused => RowTone::Paused,
-                TorrentStatsState::Initializing { paused: true } => RowTone::Paused,
-                TorrentStatsState::Initializing { paused: false } => RowTone::Normal,
-                TorrentStatsState::Live if !s.finished => RowTone::Downloading,
-                TorrentStatsState::Live => RowTone::Seeding,
+                TorrentState::Error => RowTone::Error,
+                TorrentState::Paused => RowTone::Paused,
+                TorrentState::Initializing { paused: true } => RowTone::Paused,
+                TorrentState::Initializing { paused: false } => RowTone::Normal,
+                TorrentState::Live if !s.finished => RowTone::Downloading,
+                TorrentState::Live => RowTone::Seeding,
             },
         };
 
@@ -122,14 +117,9 @@ impl TorrentRow {
             progress_raw,
             peers: live.map_or_else(
                 || "N/A".into(),
-                |l| {
-                    format!(
-                        "{}/{}",
-                        l.snapshot.peer_stats.live, l.snapshot.peer_stats.seen
-                    )
-                },
+                |l| format!("{}/{}", l.peers_live, l.peers_seen),
             ),
-            peers_raw: live.map_or(0, |l| l.snapshot.peer_stats.live),
+            peers_raw: live.map_or(0, |l| l.peers_live),
             down_speed: live.map_or_else(|| "N/A".into(), |l| format_speed(l.download_speed.mbps)),
             down_speed_raw: live.map_or(0.0, |l| l.download_speed.as_bytes() as f64),
             tone,
@@ -142,13 +132,12 @@ impl TorrentRow {
             eta: live.map_or_else(
                 || "—".into(),
                 |l| {
-                    l.time_remaining
-                        .as_ref()
-                        .map(|t| t.to_string())
+                    l.time_remaining_secs
+                        .map(format_eta)
                         .unwrap_or_else(|| "—".to_string())
                 },
             ),
-            eta_raw: live.and_then(|l| l.time_remaining.as_ref().map(|t| t.as_secs())),
+            eta_raw: live.and_then(|l| l.time_remaining_secs),
         }
     }
 }
@@ -165,8 +154,9 @@ struct TorrentFilter {
 
 /// Table delegate that holds torrent row data.
 pub struct TorrentTableDelegate {
-    /// Full, unfiltered set of rows as last fetched from the API. The visible
-    /// `rows` are derived from this by [`TorrentTableDelegate::apply_filter`].
+    /// Full, unfiltered set of rows as last fetched from the client. The
+    /// visible `rows` are derived from this by
+    /// [`TorrentTableDelegate::apply_filter`].
     pub all_rows: Vec<TorrentRow>,
     pub rows: Vec<TorrentRow>,
     columns: Vec<Column>,
@@ -183,10 +173,17 @@ pub struct TorrentTableDelegate {
     sort_dir: ColumnSort,
     /// Weak handle to the parent [`MainPanel`] so the context menu can open dialogs.
     main_panel: WeakEntity<MainPanel>,
+    /// Data source and host services for the context-menu actions.
+    client: Arc<dyn TorrentClient>,
+    host: Arc<dyn UiHost>,
 }
 
 impl TorrentTableDelegate {
-    pub fn new(main_panel: WeakEntity<MainPanel>) -> Self {
+    pub fn new(
+        main_panel: WeakEntity<MainPanel>,
+        client: Arc<dyn TorrentClient>,
+        host: Arc<dyn UiHost>,
+    ) -> Self {
         Self {
             all_rows: Vec::new(),
             rows: Vec::new(),
@@ -210,6 +207,8 @@ impl TorrentTableDelegate {
             sort_col_ix: None,
             sort_dir: ColumnSort::Default,
             main_panel,
+            client,
+            host,
         }
     }
 
@@ -538,43 +537,61 @@ impl TableDelegate for TorrentTableDelegate {
         self.selected_rows.insert(row_ix);
         self.anchor_row = Some(row_ix);
 
-        // Clone the output folder for the open-folder handler.
-        // api_torrent_details is synchronous, so we can call it here.
-        let api = _cx.global::<State>().api();
-        let output_folder = api
-            .api_torrent_details(torrent_id.into())
-            .ok()
-            .map(|d| d.output_folder)
-            .unwrap_or_default();
+        let client = self.client.clone();
+        let host = self.host.clone();
 
-        menu.item(torrent_action_menu_item(
-            format!("Pause: {torrent_name}"),
-            torrent_id,
-            TorrentAction::Pause,
-        ))
-        .item(torrent_action_menu_item(
-            format!("Start: {torrent_name}"),
-            torrent_id,
-            TorrentAction::Start,
-        ))
-        .separator()
-        .item(
-            PopupMenuItem::new("Open Folder").on_click(move |_, _, _cx: &mut App| {
-                if !output_folder.is_empty() {
-                    let _ = std::process::Command::new("open")
-                        .arg(&output_folder)
-                        .spawn();
-                }
-            }),
-        )
-        .separator()
-        .item(
+        let mut m = menu
+            .item(torrent_action_menu_item(
+                format!("Pause: {torrent_name}"),
+                torrent_id as usize,
+                rqbit_protocol::TorrentAction::Pause,
+                client.clone(),
+            ))
+            .item(torrent_action_menu_item(
+                format!("Start: {torrent_name}"),
+                torrent_id as usize,
+                rqbit_protocol::TorrentAction::Start,
+                client.clone(),
+            ))
+            .separator();
+
+        if self.host.capabilities().open_folder {
+            // Resolve the output folder lazily (async round-trip; may be a
+            // network call on remote clients), then hand it to the host.
+            m = m.item(
+                PopupMenuItem::new("Open Folder").on_click(move |_, _, cx: &mut App| {
+                    let client = client.clone();
+                    let host = host.clone();
+                    cx.spawn(async move |cx| {
+                        let Ok(details) = client
+                            .details(&rqbit_protocol::TorrentId::Id(torrent_id))
+                            .await
+                        else {
+                            return;
+                        };
+                        let path = details.output_folder;
+                        if path.is_empty() {
+                            return;
+                        }
+                        cx.update(|_cx| host.open_folder(&path));
+                    })
+                    .detach();
+                }),
+            )
+            .separator();
+        }
+
+        m.item(
             PopupMenuItem::new(format!("Delete: {torrent_name}")).on_click({
                 let main_panel = self.main_panel.clone();
                 move |_, window, cx: &mut App| {
                     if let Some(main) = main_panel.upgrade() {
                         main.update(cx, |this, cx| {
-                            this.open_delete_dialog(vec![torrent_id], window, cx);
+                            this.open_delete_dialog(
+                                vec![torrent_id as usize],
+                                window,
+                                cx,
+                            );
                         });
                     }
                 }

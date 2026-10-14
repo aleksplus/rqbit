@@ -9,16 +9,14 @@ use gpui_kit::component::{
     table::{Column, ColumnSort, DataTable, TableDelegate, TableState},
     v_flex,
 };
-use librqbit::TorrentStats;
-use librqbit::api::{
-    PeerStatsFilter, PeerStatsFilterState, PeerStatsSnapshot, TorrentDetailsResponse,
-};
 use std::collections::HashSet;
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::state::State;
+use rqbit_protocol::{PeerEntry, PeerStatsSnapshot, TorrentDetails, TorrentId, TorrentStats};
+
+use crate::client::TorrentClient;
+use crate::host::UiHost;
 use crate::ui::file_table::{FileRow, FileTableDelegate};
 use crate::ui::utils::{format_bytes, format_speed};
 
@@ -42,13 +40,13 @@ enum DetailTab {
 ///
 /// Uses a tabbed layout: Overview, Trackers, Peers, Files.
 pub struct TorrentDetailPanel {
-    state: Arc<State>,
+    client: Arc<dyn TorrentClient>,
+    host: Arc<dyn UiHost>,
     torrent_id: usize,
     active_tab: DetailTab,
-    details: Option<TorrentDetailsResponse>,
+    details: Option<TorrentDetails>,
     stats: Option<TorrentStats>,
     comment: Option<String>,
-    trackers: Vec<String>,
     peer_stats: Option<PeerStatsSnapshot>,
     file_table_state: Entity<TableState<FileTableDelegate>>,
     peer_table_state: Entity<TableState<PeerTableDelegate>>,
@@ -68,7 +66,8 @@ impl TorrentDetailPanel {
         torrent_id: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-        state: Arc<State>,
+        client: Arc<dyn TorrentClient>,
+        host: Arc<dyn UiHost>,
     ) -> Self {
         let panel_weak = cx.entity().downgrade();
         let file_table_state = cx.new(|cx| {
@@ -101,13 +100,13 @@ impl TorrentDetailPanel {
             .new(|cx| TableState::new(PeerTableDelegate::new(), window, cx).row_selectable(false));
 
         let mut this = Self {
-            state,
+            client,
+            host,
             torrent_id,
             active_tab: DetailTab::Overview,
             details: None,
             stats: None,
             comment: None,
-            trackers: Vec::new(),
             peer_stats: None,
             file_table_state,
             peer_table_state,
@@ -129,35 +128,21 @@ impl TorrentDetailPanel {
         self.details = None;
         self.stats = None;
         self.comment = None;
-        self.trackers.clear();
         self.peer_stats = None;
         self.fetch_details(cx);
     }
 
     fn fetch_details(&mut self, cx: &mut Context<Self>) {
-        let api = self.state.api();
+        let client = self.client.clone();
         let torrent_id = self.torrent_id;
         let file_table_state = self.file_table_state.clone();
         let peer_table_state = self.peer_table_state.clone();
 
         cx.spawn(async move |this, cx| {
-            let details = api.api_torrent_details(torrent_id.into());
-            let stats = api.api_stats_v1(torrent_id.into());
-
-            // Fetch trackers from the managed torrent handle
-            let trackers: Vec<String> = api
-                .mgr_handle(torrent_id.into())
-                .ok()
-                .map(|h| h.shared().trackers.iter().map(|t| t.to_string()).collect())
-                .unwrap_or_default();
-
-            // Fetch peer stats
-            let peer_stats = api.api_peer_stats(
-                torrent_id.into(),
-                PeerStatsFilter {
-                    state: PeerStatsFilterState::All,
-                },
-            );
+            let torrent = TorrentId::Id(torrent_id as u64);
+            let details = client.details(&torrent).await;
+            let stats = client.stats(&torrent).await;
+            let peer_stats = client.peer_stats(&torrent).await;
 
             let _ = this.update(cx, |this, cx| {
                 if let Ok(d) = &details {
@@ -192,18 +177,8 @@ impl TorrentDetailPanel {
                 }
 
                 if let Ok(ref ps) = peer_stats {
-                    let peer_rows: Vec<PeerRow> = ps
-                        .peers
-                        .iter()
-                        .map(|(addr, p)| PeerRow {
-                            address: addr.clone(),
-                            state: p.state.to_string(),
-                            client: p.client_name.clone().unwrap_or_default(),
-                            conn_kind: p.conn_kind.map(|k| k.to_string()).unwrap_or_default(),
-                            downloaded: p.counters.fetched_bytes,
-                            uploaded: p.counters.uploaded_bytes,
-                        })
-                        .collect();
+                    let peer_rows: Vec<PeerRow> =
+                        ps.peers.iter().map(PeerRow::from_entry).collect();
                     peer_table_state.update(cx, |state, cx| {
                         let delegate = state.delegate_mut();
                         delegate.rows = peer_rows;
@@ -215,7 +190,6 @@ impl TorrentDetailPanel {
                 this.details = details.ok();
                 this.stats = stats.ok();
                 this.comment = this.details.as_ref().and_then(|d| d.comment.clone());
-                this.trackers = trackers;
                 this.peer_stats = peer_stats.ok();
                 cx.notify();
             });
@@ -226,37 +200,23 @@ impl TorrentDetailPanel {
     /// Periodically refresh the peer table (and torrent stats) while the detail
     /// panel is open. Mirrors `MainPanel::start_stats_polling`: the refresh is
     /// not tied to window focus, since on macOS background-app windows stay
-    /// visible and the in-process stats calls are cheap.
+    /// visible and the stats calls are cheap.
     fn start_peer_polling(&mut self, cx: &mut Context<Self>) {
-        let api = self.state.api();
+        let client = self.client.clone();
         let task = cx.spawn(async move |this, cx| {
             loop {
                 // Read the current torrent id each iteration so that switching
                 // torrents (via `switch_torrent`) is reflected in the polling.
                 let torrent_id = this.update(cx, |this, _cx| this.torrent_id).unwrap_or(0);
+                let torrent = TorrentId::Id(torrent_id as u64);
 
-                let peer_stats = api.api_peer_stats(
-                    torrent_id.into(),
-                    PeerStatsFilter {
-                        state: PeerStatsFilterState::All,
-                    },
-                );
-                let stats = api.api_stats_v1(torrent_id.into());
+                let peer_stats = client.peer_stats(&torrent).await;
+                let stats = client.stats(&torrent).await;
 
                 let _ = this.update(cx, |this, cx| {
                     if let Ok(ref ps) = peer_stats {
-                        let peer_rows: Vec<PeerRow> = ps
-                            .peers
-                            .iter()
-                            .map(|(addr, p)| PeerRow {
-                                address: addr.clone(),
-                                state: p.state.to_string(),
-                                client: p.client_name.clone().unwrap_or_default(),
-                                conn_kind: p.conn_kind.map(|k| k.to_string()).unwrap_or_default(),
-                                downloaded: p.counters.fetched_bytes,
-                                uploaded: p.counters.uploaded_bytes,
-                            })
-                            .collect();
+                        let peer_rows: Vec<PeerRow> =
+                            ps.peers.iter().map(PeerRow::from_entry).collect();
                         this.peer_table_state.update(cx, |state, cx| {
                             let delegate = state.delegate_mut();
                             delegate.rows = peer_rows;
@@ -292,7 +252,7 @@ impl TorrentDetailPanel {
         cx.emit(TorrentDetailPanelEvent::Back);
     }
 
-    /// Toggle inclusion of a file and persist it via the API.
+    /// Toggle inclusion of a file and persist it via the client.
     fn set_file_included(&mut self, file_index: usize, included: bool, cx: &mut Context<Self>) {
         // Update the local row immediately for responsive UI.
         self.file_table_state.update(cx, |state, cx| {
@@ -302,7 +262,7 @@ impl TorrentDetailPanel {
             cx.notify();
         });
 
-        let api = self.state.api();
+        let client = self.client.clone();
         let torrent_id = self.torrent_id;
         let file_table_state = self.file_table_state.clone();
 
@@ -318,14 +278,19 @@ impl TorrentDetailPanel {
                     .collect::<HashSet<usize>>()
             });
 
-            let _ = api
-                .api_torrent_action_update_only_files(torrent_id.into(), &only_files)
+            let _ = client
+                .action(
+                    &TorrentId::Id(torrent_id as u64),
+                    rqbit_protocol::TorrentAction::UpdateOnlyFiles(
+                        only_files.into_iter().map(|ix| ix as u64).collect(),
+                    ),
+                )
                 .await;
         })
         .detach();
     }
 
-    /// Set inclusion state for all files and persist it via the API.
+    /// Set inclusion state for all files and persist it via the client.
     fn set_all_files_included(&mut self, included: bool, cx: &mut Context<Self>) {
         // Update the local rows immediately for responsive UI.
         self.file_table_state.update(cx, |state, cx| {
@@ -335,7 +300,7 @@ impl TorrentDetailPanel {
             cx.notify();
         });
 
-        let api = self.state.api();
+        let client = self.client.clone();
         let torrent_id = self.torrent_id;
         let file_table_state = self.file_table_state.clone();
 
@@ -350,23 +315,22 @@ impl TorrentDetailPanel {
                     .collect::<HashSet<usize>>()
             });
 
-            let _ = api
-                .api_torrent_action_update_only_files(torrent_id.into(), &only_files)
+            let _ = client
+                .action(
+                    &TorrentId::Id(torrent_id as u64),
+                    rqbit_protocol::TorrentAction::UpdateOnlyFiles(
+                        only_files.into_iter().map(|ix| ix as u64).collect(),
+                    ),
+                )
                 .await;
         })
         .detach();
     }
 
-    /// The playlist URL (M3U8) served by the HTTP API for this torrent,
-    /// mirroring the webui's `getPlaylistUrl`: `{http-api}/torrents/{id}/playlist`.
-    /// Returns `None` when the HTTP API is disabled, in which case the playlist
-    /// is unavailable.
+    /// The playlist URL (M3U8) for this torrent, provided by the host
+    /// (desktop: derived from the embedded HTTP API; remote: unavailable).
     fn playlist_url(&self) -> Option<String> {
-        let http_api = &self.state.config().http_api;
-        if http_api.disable {
-            return None;
-        }
-        Some(playlist_http_url(http_api.listen_addr, self.torrent_id))
+        self.host.playlist_url(self.torrent_id as u64)
     }
 
     /// Copy the playlist URL to the clipboard and show a green notification
@@ -386,8 +350,7 @@ impl TorrentDetailPanel {
 
     /// The "Playlist" row in the General section, mirroring the webui's
     /// `PlaylistLink`: a link that copies the playlist URL to the clipboard
-    /// (paste into e.g. VLC to play), or "Unavailable" when the HTTP API is
-    /// disabled.
+    /// (paste into e.g. VLC to play), or "Unavailable" when there is none.
     fn render_playlist_row(&self, cx: &mut Context<Self>) -> Div {
         let theme = cx.theme().clone();
 
@@ -475,16 +438,12 @@ impl TorrentDetailPanel {
             .as_ref()
             .and_then(|s| s.live.as_ref())
             .map(|live| {
-                let peers = format!(
-                    "{}/{}",
-                    live.snapshot.peer_stats.live, live.snapshot.peer_stats.seen,
-                );
+                let peers = format!("{}/{}", live.peers_live, live.peers_seen);
                 let down = format_speed(live.download_speed.mbps);
                 let up = format_speed(live.upload_speed.mbps);
                 let eta = live
-                    .time_remaining
-                    .as_ref()
-                    .map(|t| t.to_string())
+                    .time_remaining_secs
+                    .map(crate::ui::utils::format_eta)
                     .unwrap_or_else(|| "—".to_string());
                 (down, up, peers, eta)
             })
@@ -591,7 +550,12 @@ impl TorrentDetailPanel {
     }
 
     fn render_trackers(&self, _cx: &mut Context<Self>) -> impl IntoElement {
-        if self.trackers.is_empty() {
+        let trackers = self
+            .details
+            .as_ref()
+            .map(|d| d.trackers.as_slice())
+            .unwrap_or_default();
+        if trackers.is_empty() {
             return v_flex().p_4().child(
                 div()
                     .text_color(gpui::rgb(0x888888))
@@ -606,9 +570,9 @@ impl TorrentDetailPanel {
                 div()
                     .text_size(px(14.))
                     .font_weight(FontWeight::SEMIBOLD)
-                    .child(format!("Trackers ({})", self.trackers.len())),
+                    .child(format!("Trackers ({})", trackers.len())),
             )
-            .children(self.trackers.iter().map(|t| {
+            .children(trackers.iter().map(|t| {
                 h_flex()
                     .gap_2()
                     .py_1()
@@ -701,6 +665,23 @@ struct PeerRow {
     conn_kind: String,
     downloaded: u64,
     uploaded: u64,
+}
+
+impl PeerRow {
+    fn from_entry(entry: &PeerEntry) -> Self {
+        PeerRow {
+            address: entry.addr.clone(),
+            state: entry.stats.state.clone(),
+            client: entry.stats.client_name.clone().unwrap_or_default(),
+            conn_kind: entry
+                .stats
+                .conn_kind
+                .map(|k| k.to_string())
+                .unwrap_or_default(),
+            downloaded: entry.stats.fetched_bytes,
+            uploaded: entry.stats.uploaded_bytes,
+        }
+    }
 }
 
 /// Table delegate for the peer list.
@@ -833,73 +814,4 @@ fn info_row(label: impl Into<String>, value: impl Into<String>) -> Div {
                 .child(label),
         )
         .child(div().flex_1().child(value))
-}
-
-/// Build the playlist URL served by the HTTP API for a torrent, mirroring the
-/// webui's `getPlaylistUrl`: `{http-api-base}/torrents/{id}/playlist`. An
-/// unspecified listen address (0.0.0.0 / ::) is replaced with the loopback
-/// address so the URL works from the local machine.
-fn playlist_http_url(listen_addr: SocketAddr, torrent_id: usize) -> String {
-    let host = match listen_addr.ip() {
-        IpAddr::V4(v4) if v4.is_unspecified() => "127.0.0.1".to_string(),
-        IpAddr::V6(v6) => {
-            let v6 = if v6.is_unspecified() {
-                Ipv6Addr::LOCALHOST
-            } else {
-                v6
-            };
-            format!("[{v6}]")
-        }
-        ip => ip.to_string(),
-    };
-    format!(
-        "http://{host}:{}/torrents/{torrent_id}/playlist",
-        listen_addr.port()
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    // Import only what the tests use: a `use super::*` glob would re-import
-    // the `test` attribute macro from the parent's `use gpui::*` glob (the
-    // test-support feature re-exports it), shadowing the built-in `#[test]`
-    // and recursing during expansion.
-    use super::playlist_http_url;
-    use std::net::SocketAddr;
-
-    fn addr(s: &str) -> SocketAddr {
-        s.parse().unwrap()
-    }
-
-    #[test]
-    fn playlist_url_loopback_v4() {
-        assert_eq!(
-            playlist_http_url(addr("127.0.0.1:3030"), 3),
-            "http://127.0.0.1:3030/torrents/3/playlist"
-        );
-    }
-
-    #[test]
-    fn playlist_url_keeps_non_loopback_address() {
-        assert_eq!(
-            playlist_http_url(addr("192.168.1.5:3030"), 42),
-            "http://192.168.1.5:3030/torrents/42/playlist"
-        );
-    }
-
-    #[test]
-    fn playlist_url_replaces_unspecified_v4_with_loopback() {
-        assert_eq!(
-            playlist_http_url(addr("0.0.0.0:1234"), 0),
-            "http://127.0.0.1:1234/torrents/0/playlist"
-        );
-    }
-
-    #[test]
-    fn playlist_url_replaces_unspecified_v6_with_loopback() {
-        assert_eq!(
-            playlist_http_url(addr("[::]:1234"), 7),
-            "http://[::1]:1234/torrents/7/playlist"
-        );
-    }
 }

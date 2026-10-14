@@ -95,6 +95,11 @@ mod tests {
             ClientMessage::Unsubscribe {
                 torrent: Some(TorrentId::Id(3)),
             },
+            ClientMessage::SubscribeLogs(true),
+            ClientMessage::Request {
+                id: 4,
+                req: Request::SetRustLog("info,librqbit=debug".into()),
+            },
             ClientMessage::Ping,
         ];
         for msg in msgs {

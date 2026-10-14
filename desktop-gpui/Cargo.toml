@@ -22,6 +22,9 @@ gpui-kit = "0.7.1"
 gpui = { package = "gpui-pre", version = "=0.3.8" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit"] }
 url.workspace = true
+async-trait = { workspace = true }
+rqbit-protocol = { workspace = true, features = ["librqbit"] }
+rqbit-ui = { workspace = true }
 librqbit = { workspace = true, features = [
     "tracing-subscriber-utils",
     "http-api",

@@ -34,6 +34,18 @@ impl TorrentId {
     }
 }
 
+impl From<u64> for TorrentId {
+    fn from(v: u64) -> Self {
+        TorrentId::Id(v)
+    }
+}
+
+impl From<usize> for TorrentId {
+    fn from(v: usize) -> Self {
+        TorrentId::Id(v as u64)
+    }
+}
+
 /// Same lowercase strings as librqbit's `TorrentStatsState` `Display`
 /// (`initializing`, `live`, `paused`, `error`) — the UI's status filter
 /// matches on them.

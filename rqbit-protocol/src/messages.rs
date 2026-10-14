@@ -31,6 +31,9 @@ pub enum ClientMessage {
     Subscribe { torrent: Option<TorrentId> },
     /// Undo a previous `Subscribe`.
     Unsubscribe { torrent: Option<TorrentId> },
+    /// Start/stop receiving `PushUpdate::LogLines` (the
+    /// `Api::api_log_lines_stream` channel, forwarded as raw line bytes).
+    SubscribeLogs(bool),
     /// Keepalive; answered with `ServerMessage::Pong`.
     Ping,
 }
@@ -68,6 +71,8 @@ pub enum Request {
         /// Resolve metadata/files without adding.
         list_only: bool,
     },
+    /// `Api::api_set_rust_log`.
+    SetRustLog(String),
 }
 
 /// The torrent actions the UI dispatches (mirrors the

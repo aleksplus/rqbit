@@ -16,7 +16,9 @@ members = [
     "crates/upnp-serve",
     "desktop/src-tauri",
     "desktop-gpui",
+    "app-daemon",
     "rqbit-protocol",
+    "rqbit-ui",
 ]
 
 # Everything except desktop
@@ -33,6 +35,7 @@ default-members = [
     "crates/upnp",
     "crates/tracker_comms",
     "crates/upnp-serve",
+    "app-daemon",
     "rqbit-protocol",
 ]
 
@@ -70,6 +73,7 @@ tracker_comms = { path = "crates/tracker_comms", package = "librqbit-tracker-com
 librqbit-upnp = { path = "crates/upnp", version = "9.0.1" }
 upnp-serve = { path = "crates/upnp-serve", package = "librqbit-upnp-serve", version = "9.0.1", default-features = false }
 rqbit-protocol = { path = "rqbit-protocol", version = "9.0.1" }
+rqbit-ui = { path = "rqbit-ui", version = "9.0.1" }
 
 # External crates
 anyhow = "1"

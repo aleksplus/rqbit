@@ -1,4 +1,4 @@
-use crate::ui::main_panel::MainPanel;
+use rqbit_ui::ui::main_panel::MainPanel;
 use gpui::*;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

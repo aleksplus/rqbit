@@ -12,7 +12,7 @@ use gpui_kit::component::{
     v_flex,
 };
 
-use crate::state::State;
+use crate::client::TorrentClient;
 
 /// Maximum number of log lines kept in the viewer (and re-synced into the
 /// textarea). Older lines are dropped from the front.
@@ -27,20 +27,19 @@ pub enum LogPageEvent {
 
 /// A full-page live log viewer.
 ///
-/// Subscribes to the session's log broadcast via `Api::api_log_lines_stream`
-/// (the same stream the HTTP API serves at `/stream_logs`) and appends
+/// Subscribes to the client's log line stream (`Api::api_log_lines_stream`
+/// locally; the `SubscribeLogs` push channel on remote clients) and appends
 /// formatted lines to a readonly [`Textarea`]. While the cursor sits at the
 /// end of the text the view follows the tail; if the user scrolls up or makes
 /// a selection, incoming lines are only counted (shown as a "N new lines"
 /// button) until the user resumes, so reading and copying are not disturbed.
 ///
-/// Dropping the page drops the stream task and with it the broadcast
-/// receiver, so log production short-circuits while the viewer is closed.
+/// Dropping the page drops the stream task and with it the subscription, so
+/// log production short-circuits while the viewer is closed.
 pub struct LogPage {
-    state: Arc<State>,
+    client: Arc<dyn TorrentClient>,
     textarea: Entity<TextareaState>,
-    /// RUST_LOG value editor for `Api::api_set_rust_log` (the `/rust_log`
-    /// HTTP endpoint equivalent).
+    /// RUST_LOG value editor for `Api::api_set_rust_log`.
     rust_log_input: Entity<InputState>,
     /// The full desired log content, capped at [`MAX_LINES`] lines. Lines
     /// always end with a newline, so the last rope line is empty.
@@ -58,7 +57,11 @@ pub struct LogPage {
 impl EventEmitter<LogPageEvent> for LogPage {}
 
 impl LogPage {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>, state: Arc<State>) -> Self {
+    pub fn new(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        client: Arc<dyn TorrentClient>,
+    ) -> Self {
         let textarea = cx.new(|cx| {
             let mut state = TextareaState::new(window, cx)
                 .placeholder("Waiting for live logs…")
@@ -71,10 +74,10 @@ impl LogPage {
                 .default_value(std::env::var("RUST_LOG").unwrap_or_else(|_| "info".into()))
         });
 
-        let api = state.api();
         let weak = cx.entity().downgrade();
+        let stream_client = client.clone();
         let stream_task = window.spawn(cx, async move |cx| {
-            let stream = match api.api_log_lines_stream() {
+            let mut stream = match stream_client.log_lines() {
                 Ok(s) => s,
                 Err(e) => {
                     let _ = cx.update(|_, cx| {
@@ -86,21 +89,23 @@ impl LogPage {
                     return;
                 }
             };
-            let mut stream = std::pin::pin!(stream);
-            loop {
-                // Block until the first line arrives, then drain everything
+            let mut ended = false;
+            while !ended {
+                // Block until the first chunk arrives, then drain everything
                 // that is already ready so each wake applies a single batch.
                 let mut batch: Vec<String> = Vec::new();
                 match stream.next().await {
-                    Some(Ok(bytes)) => format_chunk(&bytes, &mut batch),
-                    Some(Err(e)) => batch.push(format!("--- log stream lagged: {e} ---")),
+                    Some(bytes) => format_chunk(&bytes, &mut batch),
                     None => break,
                 }
-                while let Some(item) = stream.next().now_or_never() {
-                    match item {
-                        Some(Ok(bytes)) => format_chunk(&bytes, &mut batch),
-                        Some(Err(e)) => batch.push(format!("--- log stream lagged: {e} ---")),
-                        None => break,
+                loop {
+                    match stream.next().now_or_never() {
+                        None => break, // nothing more ready right now
+                        Some(Some(bytes)) => format_chunk(&bytes, &mut batch),
+                        Some(None) => {
+                            ended = true;
+                            break;
+                        }
                     }
                 }
                 let res = cx.update(|window, cx| {
@@ -116,7 +121,7 @@ impl LogPage {
         });
 
         Self {
-            state,
+            client,
             textarea,
             rust_log_input,
             lines: VecDeque::new(),
@@ -152,11 +157,17 @@ impl LogPage {
             cx.notify();
             return;
         }
-        self.error = match self.state.api().api_set_rust_log(value) {
-            Ok(_) => None,
-            Err(e) => Some(format!("Failed to set RUST_LOG: {e}").into()),
-        };
-        cx.notify();
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let result = client.set_rust_log(value).await;
+            let _ = this.update(cx, |this, cx| {
+                this.error = result
+                    .err()
+                    .map(|e| format!("Failed to set RUST_LOG: {e}").into());
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Whether the textarea cursor sits at the very end of the text, i.e. the
@@ -229,7 +240,7 @@ impl LogPage {
 
 /// Split a streamed chunk into lines and format each one.
 ///
-/// The broadcast writer flushes one JSON line per event, but be defensive
+/// The stream producer flushes one JSON line per event, but be defensive
 /// about chunks containing multiple (or partial trailing) lines.
 fn format_chunk(chunk: &[u8], out: &mut Vec<String>) {
     for line in chunk.split(|&b| b == b'\n') {
@@ -244,8 +255,8 @@ fn format_chunk(chunk: &[u8], out: &mut Vec<String>) {
     }
 }
 
-/// Format one JSON log line (tracing-subscriber JSON format, as served by
-/// `/stream_logs`) into a readable single line:
+/// Format one JSON log line (tracing-subscriber JSON format) into a readable
+/// single line:
 /// `HH:MM:SS.mmm LEVEL [target] message extra=value`.
 /// Non-JSON input is passed through as-is.
 fn format_log_line(line: &[u8]) -> String {

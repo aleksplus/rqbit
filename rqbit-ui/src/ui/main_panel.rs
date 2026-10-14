@@ -15,35 +15,35 @@ use gpui_kit::component::{
     v_flex,
 };
 use gpui_kit::component::{Theme, ThemeMode};
-use librqbit::api::{ApiTorrentListOpts, EmptyJsonResponse};
-use librqbit::dht::DhtStats;
-use librqbit::session_stats::snapshot::SessionStatsSnapshot;
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::hooks::{HookEvent, TorrentDeletedPayload, TorrentInfo, envelope};
-use crate::state::State;
+use rqbit_protocol::{DhtStats, ProtoErrorKind, PushUpdate, SessionStats, TorrentAction};
+
+use futures::StreamExt as _;
+
+use crate::client::{AddTorrentRequest, ClientResult, TorrentClient, UiAddSource};
+use crate::host::UiHost;
 use crate::ui::add_torrent_dialog::{
-    AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry, AddTorrentSource,
+    AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry,
 };
 
 use crate::ui::dialogs::{DeleteDialog, DeleteDialogEvent, MagnetDialog, MagnetDialogEvent};
 use crate::ui::log_page::{LogPage, LogPageEvent};
-use crate::ui::settings_page::{SettingsPage, SettingsPageEvent};
 use crate::ui::torrent_detail_panel::{TorrentDetailPanel, TorrentDetailPanelEvent};
-use crate::ui::torrent_table::{TorrentAction, TorrentRow, TorrentTableDelegate};
-use crate::ui::utils::{build_entry, format_bytes, format_uptime, render_modal_overlay};
+use crate::ui::torrent_table::{TorrentRow, TorrentTableDelegate};
+use crate::ui::utils::{
+    build_entry, format_bytes, format_speed, format_uptime, render_modal_overlay,
+};
 
-/// Future returned by a per-torrent API action dispatched by
-/// [`MainPanel::run_action_for_ids`]. All `api_torrent_action_*` methods share
-/// the same output type.
-type TorrentApiActionFuture =
-    Pin<Box<dyn Future<Output = librqbit::api::Result<EmptyJsonResponse>> + Send>>;
+/// Future returned by a per-torrent action dispatched by
+/// [`MainPanel::run_action_for_ids`].
+type TorrentActionFuture = Pin<Box<dyn Future<Output = ClientResult<()>> + 'static>>;
 
-/// DHT health for the footer indicator, derived from `Api::api_dht_stats`.
+/// DHT health for the footer indicator, derived from `TorrentClient::dht_stats`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DhtFooterStatus {
     /// DHT is running and the routing table has nodes.
@@ -51,28 +51,24 @@ enum DhtFooterStatus {
     /// DHT is enabled but the routing table is empty (still bootstrapping,
     /// or the bootstrap nodes are unreachable).
     Connecting,
-    /// `api_dht_stats()` failed with something other than "disabled".
+    /// The stats request failed with something other than "disabled".
     Error,
-    /// DHT is turned off in settings.
+    /// DHT is turned off on the daemon/session side.
     Disabled,
 }
 
-/// Map the result of `Api::api_dht_stats` to a footer status. A 404 is the
-/// API's "DHT is disabled" marker (`ApiError::dht_disabled`); any other
-/// error status is treated as a genuine failure.
-fn dht_footer_status(res: &librqbit::api::Result<DhtStats>) -> DhtFooterStatus {
+/// Map the result of `TorrentClient::dht_stats` to a footer status.
+fn dht_footer_status(res: &ClientResult<DhtStats>) -> DhtFooterStatus {
     match res {
         Ok(stats) => {
-            let nodes = stats.routing_table_size + stats.routing_table_size_v6;
+            let nodes = (stats.routing_table_size + stats.routing_table_size_v6) as usize;
             if nodes > 0 {
                 DhtFooterStatus::Connected { nodes }
             } else {
                 DhtFooterStatus::Connecting
             }
         }
-        // `ApiError`'s kind is private, so identify `dht_disabled` by its
-        // NOT_FOUND status.
-        Err(e) if e.status().as_u16() == 404 => DhtFooterStatus::Disabled,
+        Err(e) if e.kind == ProtoErrorKind::DhtDisabled => DhtFooterStatus::Disabled,
         Err(_) => DhtFooterStatus::Error,
     }
 }
@@ -85,18 +81,11 @@ enum ActiveDialog {
     Add(Entity<AddTorrentDialog>),
 }
 
-/// The full page (replacing the torrent list) currently open, if any. At most
-/// one page can be open at a time; opening a new one replaces the previous.
-enum ActivePage {
-    Settings(Entity<SettingsPage>),
-    Logs(Entity<LogPage>),
-}
-
-/// Run configured `file_selection` hooks against an entry's resolved file
-/// list and record which ones changed the selection (shown as a hint in the
-/// add dialog). A no-op when no such hooks are enabled.
-async fn apply_file_selection_hooks(state: &Arc<State>, entry: &mut AddTorrentEntry) {
-    let applied = state.hooks().apply_file_selection(entry).await;
+/// Run configured host file-selection adjustments against an entry's resolved
+/// file list and record which ones changed the selection (shown as a hint in
+/// the add dialog). A no-op when the host has none.
+async fn apply_file_selection_host(host: &Arc<dyn UiHost>, entry: &mut AddTorrentEntry) {
+    let applied = host.adjust_file_selection(entry).await;
     if !applied.is_empty() {
         entry.hook_note = Some(applied.join(", "));
     }
@@ -104,10 +93,12 @@ async fn apply_file_selection_hooks(state: &Arc<State>, entry: &mut AddTorrentEn
 
 /// Main panel that displays the list of torrents.
 pub struct MainPanel {
-    state: Arc<State>,
+    client: Arc<dyn TorrentClient>,
+    host: Arc<dyn UiHost>,
     table_state: Entity<TableState<TorrentTableDelegate>>,
     resizable_state: Entity<ResizableState>,
-    active_page: Option<ActivePage>,
+    /// Host-provided full page (settings) or the shared log page, when open.
+    active_page: Option<AnyView>,
     detail_panel: Option<Entity<TorrentDetailPanel>>,
     /// Torrent ID waiting for detail panel creation (deferred until window is available in render).
     pending_detail_id: Option<usize>,
@@ -115,16 +106,22 @@ pub struct MainPanel {
     /// Torrent entries waiting for add-dialog creation (deferred until window is
     /// available in render, mirroring `pending_detail_id`).
     pending_add_entries: Option<Vec<AddTorrentEntry>>,
+    /// Torrent IDs + resolved names waiting for delete-dialog creation
+    /// (deferred until window is available in render).
+    pending_delete_dialog: Option<(Vec<usize>, Vec<String>)>,
     /// Latest session-wide stats for the footer (download/upload speed, uptime).
-    footer_stats: Option<SessionStatsSnapshot>,
+    footer_stats: Option<SessionStats>,
     /// Latest DHT health for the footer (None until the first poll completes).
     dht_status: Option<DhtFooterStatus>,
     /// Search box for filtering torrents by name.
     search_input: Entity<InputState>,
     /// Status filter dropdown (empty string = "All").
     status_filter: Entity<SelectState<SearchableVec<String>>>,
-    /// Keeps the periodic stats polling task alive for the lifetime of the panel.
+    /// Keeps the periodic stats polling task alive for the lifetime of the
+    /// panel (only started for clients that don't push updates).
     _stats_task: Option<Task<()>>,
+    /// Keeps the push-update consumer alive for pushing clients.
+    _updates_task: Option<Task<()>>,
     /// Whether the window is currently active (focused). Only used to refresh
     /// immediately on re-activation; the periodic polling no longer depends
     /// on it.
@@ -133,15 +130,25 @@ pub struct MainPanel {
 }
 
 impl MainPanel {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = cx.global::<State>().clone();
+    pub fn new(
+        client: Arc<dyn TorrentClient>,
+        host: Arc<dyn UiHost>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let weak = cx.entity().downgrade();
 
         let mut this = Self {
-            state: Arc::new(state),
+            client: client.clone(),
+            host,
             // Placeholder; replaced just below once `this` exists.
             table_state: cx.new(|_cx| {
                 TableState::new(
-                    TorrentTableDelegate::new(WeakEntity::new_invalid()),
+                    TorrentTableDelegate::new(
+                        WeakEntity::new_invalid(),
+                        client.clone(),
+                        dummy_host(),
+                    ),
                     window,
                     _cx,
                 )
@@ -153,6 +160,7 @@ impl MainPanel {
             pending_detail_id: None,
             dialog: None,
             pending_add_entries: None,
+            pending_delete_dialog: None,
             footer_stats: None,
             dht_status: None,
             search_input: cx
@@ -171,14 +179,19 @@ impl MainPanel {
                 )
             }),
             _stats_task: None,
+            _updates_task: None,
             window_active: true,
             focus_handle: cx.focus_handle(),
         };
 
         // Now that `this` exists, build the real table state with a weak handle to it.
-        let weak = cx.entity().downgrade();
         let table_state = cx.new(|cx| {
-            TableState::new(TorrentTableDelegate::new(weak), window, cx).row_selectable(true)
+            TableState::new(
+                TorrentTableDelegate::new(weak, client, this.host.clone()),
+                window,
+                cx,
+            )
+            .row_selectable(true)
         });
         this.table_state = table_state.clone();
 
@@ -190,11 +203,11 @@ impl MainPanel {
                     if let Some(panel) = &this.detail_panel {
                         // Update existing panel to show the newly selected torrent.
                         panel.update(cx, |panel, cx| {
-                            panel.switch_torrent(id, cx);
+                            panel.switch_torrent(id as usize, cx);
                         });
                     } else {
                         // Mark that we need to create a panel; defer to render where window is available.
-                        this.pending_detail_id = Some(id);
+                        this.pending_detail_id = Some(id as usize);
                         cx.notify();
                     }
                 }
@@ -247,8 +260,19 @@ impl MainPanel {
         .detach();
 
         this.fetch_torrents(cx);
-        this.start_stats_polling(cx);
+        this.start_state_updates(cx);
         this
+    }
+
+    /// Keep session-wide state (footer stats, torrent list) flowing. Clients
+    /// that push updates get a push consumer; the rest (local in-process)
+    /// get the classic 1-second polling loop.
+    fn start_state_updates(&mut self, cx: &mut Context<Self>) {
+        if self.client.is_push() {
+            self.start_push_updates(cx);
+        } else {
+            self.start_stats_polling(cx);
+        }
     }
 
     /// Periodically refresh session-wide stats (footer) and the torrent table.
@@ -259,17 +283,13 @@ impl MainPanel {
     /// finishing initialization while the user was in another app). The
     /// in-process list+stats call is cheap, so we always poll once per second.
     fn start_stats_polling(&mut self, cx: &mut Context<Self>) {
-        // Capture `State` rather than an `Arc<Api>`: `configure()` can rebuild
-        // the session, and a captured API handle would keep polling the
-        // stopped session forever.
-        let state = self.state.clone();
+        let client = self.client.clone();
         let task = cx.spawn(async move |this, cx| {
             loop {
-                let api = state.api();
-                let stats = api.api_session_stats();
-                let dht_status = dht_footer_status(&api.api_dht_stats());
+                let stats = client.session_stats().await;
+                let dht_status = dht_footer_status(&client.dht_stats().await);
                 let _ = this.update(cx, |this, cx| {
-                    this.footer_stats = Some(stats);
+                    this.footer_stats = stats.ok();
                     this.dht_status = Some(dht_status);
                     cx.notify();
                 });
@@ -281,6 +301,44 @@ impl MainPanel {
             }
         });
         self._stats_task = Some(task);
+    }
+
+    /// Consume pushed updates (torrent list + footer stats) from a pushing
+    /// client, and fetch the DHT status once for the footer.
+    fn start_push_updates(&mut self, cx: &mut Context<Self>) {
+        let mut updates = self.client.updates();
+        let client = self.client.clone();
+        let task = cx.spawn(async move |this, cx| {
+            // One-shot DHT status: pushes don't carry it (it rarely changes
+            // mid-session); a "disabled" DHT is reported as an error here.
+            let dht_status = dht_footer_status(&client.dht_stats().await);
+            let _ = this.update(cx, |this, cx| {
+                this.dht_status = Some(dht_status);
+                cx.notify();
+            });
+
+            while let Some(push) = updates.next().await {
+                match push {
+                    PushUpdate::TorrentList(list) => {
+                        let rows: Vec<TorrentRow> =
+                            list.torrents.iter().map(TorrentRow::from_details).collect();
+                        let _ = this.update(cx, |this, cx| this.install_rows(rows, cx));
+                    }
+                    PushUpdate::SessionStats(stats) => {
+                        let _ = this.update(cx, |this, cx| {
+                            this.footer_stats = Some(*stats);
+                            cx.notify();
+                        });
+                    }
+                    // Torrent-level pushes are not consumed here: the detail
+                    // panel refreshes itself over requests. The daemon only
+                    // sends them to per-torrent subscribers, which this
+                    // session-level subscription is not.
+                    _ => {}
+                }
+            }
+        });
+        self._updates_task = Some(task);
     }
 
     /// Push the current search text and status filter into the table delegate,
@@ -303,48 +361,50 @@ impl MainPanel {
     }
 
     fn fetch_torrents(&mut self, cx: &mut Context<Self>) {
-        let api = self.state.api();
-        let table_state = self.table_state.clone();
+        let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let response = api.api_torrent_list_ext(ApiTorrentListOpts { with_stats: true });
+            let response = client.list(true).await;
             let rows: Vec<TorrentRow> = response
-                .torrents
-                .iter()
-                .map(TorrentRow::from_listed)
-                .collect();
+                .map(|r| r.torrents.iter().map(TorrentRow::from_details).collect())
+                .unwrap_or_default();
 
-            table_state.update(cx, |state, cx| {
-                // Preserve selected torrent IDs across refresh by matching after update.
-                let prev_selected_ids: HashSet<usize> = state
-                    .delegate()
-                    .selected_rows
-                    .iter()
-                    .filter_map(|&ix| state.delegate().rows.get(ix).map(|r| r.id))
-                    .collect();
-                state.delegate_mut().all_rows = rows;
-                // Derive the visible rows from the full set using the filter
-                // stored in the delegate, then re-apply the active sort.
-                state.delegate_mut().apply_filter();
-                // Re-select rows whose torrent IDs match the previous selection.
-                state.delegate_mut().selected_rows = state
-                    .delegate()
-                    .rows
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(ix, r)| {
-                        if prev_selected_ids.contains(&r.id) {
-                            Some(ix)
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
-                cx.notify();
-            });
-
-            let _ = this.update(cx, |_, cx| cx.notify());
+            let _ = this.update(cx, |this, cx| this.install_rows(rows, cx));
         })
         .detach();
+    }
+
+    /// Install a freshly fetched torrent list into the table, preserving the
+    /// selection by torrent ID and re-applying filter + sort.
+    fn install_rows(&mut self, rows: Vec<TorrentRow>, cx: &mut Context<Self>) {
+        self.table_state.update(cx, |state, cx| {
+            // Preserve selected torrent IDs across refresh by matching after update.
+            let prev_selected_ids: HashSet<u64> = state
+                .delegate()
+                .selected_rows
+                .iter()
+                .filter_map(|&ix| state.delegate().rows.get(ix).map(|r| r.id))
+                .collect();
+            state.delegate_mut().all_rows = rows;
+            // Derive the visible rows from the full set using the filter
+            // stored in the delegate, then re-apply the active sort.
+            state.delegate_mut().apply_filter();
+            // Re-select rows whose torrent IDs match the previous selection.
+            state.delegate_mut().selected_rows = state
+                .delegate()
+                .rows
+                .iter()
+                .enumerate()
+                .filter_map(|(ix, r)| {
+                    if prev_selected_ids.contains(&r.id) {
+                        Some(ix)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            cx.notify();
+        });
+        cx.notify();
     }
 
     /// Get all selected torrent IDs (supports multi-row selection via shift-click).
@@ -356,13 +416,13 @@ impl MainPanel {
             // Fall back to the table's single selected_row
             return table
                 .selected_row()
-                .and_then(|r| delegate.rows.get(r).map(|row| row.id))
+                .and_then(|r| delegate.rows.get(r).map(|row| row.id as usize))
                 .into_iter()
                 .collect();
         }
         selected
             .iter()
-            .filter_map(|&ix| delegate.rows.get(ix).map(|row| row.id))
+            .filter_map(|&ix| delegate.rows.get(ix).map(|row| row.id as usize))
             .collect()
     }
 
@@ -381,40 +441,32 @@ impl MainPanel {
         if ids.is_empty() {
             return;
         }
-        let api = self.state.api();
-        match action {
-            TorrentAction::Pause => self.run_action_for_ids(
-                ids,
-                move |id| {
-                    let api = api.clone();
-                    Box::pin(async move { api.api_torrent_action_pause(id.into()).await })
-                },
-                cx,
-            ),
-            TorrentAction::Start => self.run_action_for_ids(
-                ids,
-                move |id| {
-                    let api = api.clone();
-                    Box::pin(async move { api.api_torrent_action_start(id.into()).await })
-                },
-                cx,
-            ),
-        }
+        let client = self.client.clone();
+        self.run_action_for_ids(
+            ids,
+            move |id| {
+                let client = client.clone();
+                let action = action.clone();
+                Box::pin(async move { client.action(&id.into(), action).await })
+            },
+            cx,
+        );
     }
 
     /// Run `action` for each torrent ID sequentially, then clear the table
     /// selection and refresh. Shared by the pause/start and delete/forget
-    /// flows. `action` clones the `Api` handle per call and returns a boxed
-    /// future so each variant can dispatch its own API method.
+    /// flows. `action` clones the client handle per call and returns a boxed
+    /// future so each variant can dispatch its own API method. Futures are
+    /// `?Send`: gpui runs them on the per-window (foreground) executor.
     fn run_action_for_ids<F>(&mut self, ids: Vec<usize>, action: F, cx: &mut Context<Self>)
     where
-        F: Fn(usize) -> TorrentApiActionFuture + Send + 'static,
+        F: Fn(usize) -> TorrentActionFuture + 'static,
     {
         let table_state = self.table_state.clone();
         cx.spawn(async move |_, cx| {
             for id in ids {
                 if let Err(e) = action(id).await {
-                    eprintln!("Torrent action failed: {:?}", e);
+                    eprintln!("Torrent action failed: {e}");
                 }
             }
             table_state.update(cx, |state, cx| {
@@ -436,8 +488,9 @@ impl MainPanel {
 
     /// Open the delete confirmation dialog for the given torrent IDs.
     ///
-    /// Uses a manually rendered overlay entity (same pattern as `MagnetDialog`)
-    /// so it displays reliably without depending on a global dialog layer.
+    /// Torrent names are resolved asynchronously (this may be a network
+    /// round-trip on remote clients); the dialog itself is created from
+    /// `pending_delete_dialog` in `render`, where a `Window` is available.
     /// Public so the torrent table's context menu can open it.
     pub fn open_delete_dialog(
         &mut self,
@@ -448,32 +501,24 @@ impl MainPanel {
         if ids.is_empty() {
             return;
         }
-        let api = self.state.api();
-        // Resolve names for display (synchronous API call).
-        let names: Vec<String> = ids
-            .iter()
-            .filter_map(|id| {
-                api.api_torrent_details((*id).into())
+        let client = self.client.clone();
+        cx.spawn(async move |this, cx| {
+            let mut names = Vec::with_capacity(ids.len());
+            for id in &ids {
+                let name = client
+                    .details(&(*id as u64).into())
+                    .await
                     .ok()
                     .and_then(|d| d.name)
-                    .or_else(|| Some(format!("Torrent #{}", id)))
-            })
-            .collect();
-
-        let dialog = cx.new(|cx| DeleteDialog::new(ids.clone(), names, _window, cx));
-        cx.subscribe(
-            &dialog,
-            |this, _entity, event: &DeleteDialogEvent, cx| match event {
-                DeleteDialogEvent::Cancelled => this.close_dialog(cx),
-                DeleteDialogEvent::Confirmed(ids, delete_files) => {
-                    this.close_dialog(cx);
-                    this.confirm_delete(ids.clone(), *delete_files, cx);
-                }
-            },
-        )
+                    .unwrap_or_else(|| format!("Torrent #{id}"));
+                names.push(name);
+            }
+            let _ = this.update(cx, |this, cx| {
+                this.pending_delete_dialog = Some((ids, names));
+                cx.notify();
+            });
+        })
         .detach();
-        self.dialog = Some(ActiveDialog::Delete(dialog));
-        cx.notify();
     }
 
     /// Close the currently open modal dialog, if any.
@@ -482,50 +527,32 @@ impl MainPanel {
         cx.notify();
     }
 
+    /// Close the currently open full page (settings/logs), if any. Called by
+    /// the host when its own page emits "Back".
+    pub fn close_page(&mut self, cx: &mut Context<Self>) {
+        self.active_page = None;
+        cx.notify();
+    }
+
     /// Actually perform the delete after the dialog is confirmed.
     ///
     /// When `delete_files` is true the downloaded data is removed from disk
-    /// (`api_torrent_action_delete`); otherwise only the torrent entry is removed
-    /// and the files are kept (`api_torrent_action_forget`). A successful
-    /// delete/forget fires the `torrent_deleted` hook.
+    /// (delete action); otherwise only the torrent entry is removed and the
+    /// files are kept (forget action). Clients may fire host-side side
+    /// effects (e.g. the desktop's `torrent_deleted` webhook) internally.
     fn confirm_delete(&mut self, ids: Vec<usize>, delete_files: bool, cx: &mut Context<Self>) {
-        let api = self.state.api();
-        let hooks = self.state.hooks();
+        let client = self.client.clone();
+        let action = if delete_files {
+            TorrentAction::Delete
+        } else {
+            TorrentAction::Forget
+        };
         self.run_action_for_ids(
             ids,
             move |id| {
-                let api = api.clone();
-                let hooks = hooks.clone();
-                Box::pin(async move {
-                    // Resolve details first — the handle is gone after deletion.
-                    let details = api.api_torrent_details(id.into()).ok();
-                    let result = if delete_files {
-                        api.api_torrent_action_delete(id.into()).await
-                    } else {
-                        api.api_torrent_action_forget(id.into()).await
-                    };
-                    if result.is_ok()
-                        && let Some(d) = details
-                    {
-                        hooks.forget(id);
-                        hooks.dispatch(
-                            HookEvent::TorrentDeleted,
-                            envelope(
-                                HookEvent::TorrentDeleted,
-                                TorrentDeletedPayload {
-                                    torrent: TorrentInfo {
-                                        id: Some(id),
-                                        name: d.name,
-                                        info_hash: d.info_hash,
-                                        output_folder: d.output_folder,
-                                    },
-                                    delete_files,
-                                },
-                            ),
-                        );
-                    }
-                    result
-                })
+                let client = client.clone();
+                let action = action.clone();
+                Box::pin(async move { client.action(&id.into(), action).await })
             },
             cx,
         );
@@ -535,53 +562,37 @@ impl MainPanel {
         self.fetch_torrents(cx);
     }
 
+    /// "Add Torrent…": pick .torrent files through the host, resolve their
+    /// file lists, and queue the add dialog. Only shown when the host
+    /// supports file picking.
     fn on_add_torrent_files(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let receiver = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: true,
-            prompt: Some("Select .torrent files".into()),
-        });
-
-        let state = self.state.clone();
-        cx.spawn(async move |this, cx| {
-            let api = state.api();
-            match receiver.await {
-                Ok(Ok(Some(paths))) => {
-                    let mut entries: Vec<AddTorrentEntry> = Vec::new();
-                    for path in paths {
-                        match std::fs::read(&path) {
-                            Ok(bytes) => {
-                                let source = AddTorrentSource::Bytes(bytes);
-                                match build_entry(&api, source).await {
-                                    Ok(mut entry) => {
-                                        apply_file_selection_hooks(&state, &mut entry).await;
-                                        // Remember where this torrent came from,
-                                        // so its source file can be moved to
-                                        // the configured folder after adding.
-                                        entry.source_path = Some(path);
-                                        entries.push(entry);
-                                    }
-                                    Err(e) => {
-                                        eprintln!("Error reading torrent {:?}: {:?}", path, e)
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("Error reading file {:?}: {:?}", path, e);
-                            }
+        let host = self.host.clone();
+        let client = self.client.clone();
+        let picked = host.pick_torrent_files(cx);
+        cx.spawn(async move |this, cx| match picked.await {
+            Ok(files) => {
+                let mut entries: Vec<AddTorrentEntry> = Vec::new();
+                for file in files {
+                    match build_entry(client.as_ref(), UiAddSource::Bytes(file.bytes.clone())).await
+                    {
+                        Ok(mut entry) => {
+                            apply_file_selection_host(&host, &mut entry).await;
+                            // Remember where this torrent came from, so its
+                            // source file can be moved to the configured
+                            // folder after adding.
+                            entry.source_path = file.path;
+                            entries.push(entry);
                         }
-                    }
-                    if !entries.is_empty() {
-                        let _ = this.update(cx, |this, cx| {
-                            this.open_add_dialog(entries, cx);
-                        });
+                        Err(e) => eprintln!("Error reading torrent {:?}: {e}", file.name),
                     }
                 }
-                Ok(Ok(None)) => {} // user cancelled
-                Ok(Err(e)) => eprintln!("File dialog error: {:?}", e),
-                Err(e) => eprintln!("File dialog receiver error: {:?}", e),
+                if !entries.is_empty() {
+                    let _ = this.update(cx, |this, cx| {
+                        this.open_add_dialog(entries, cx);
+                    });
+                }
             }
+            Err(e) => eprintln!("File picker error: {e}"),
         })
         .detach();
     }
@@ -604,18 +615,17 @@ impl MainPanel {
     }
 
     fn add_magnet(&mut self, magnet: String, cx: &mut Context<Self>) {
-        let state = self.state.clone();
+        let host = self.host.clone();
+        let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            let api = state.api();
-            let source = AddTorrentSource::Url(magnet);
-            match build_entry(&api, source).await {
+            match build_entry(client.as_ref(), UiAddSource::Magnet(magnet)).await {
                 Ok(mut entry) => {
-                    apply_file_selection_hooks(&state, &mut entry).await;
+                    apply_file_selection_host(&host, &mut entry).await;
                     let _ = this.update(cx, |this, cx| {
                         this.open_add_dialog(vec![entry], cx);
                     });
                 }
-                Err(e) => eprintln!("Error preparing magnet: {:?}", e),
+                Err(e) => eprintln!("Error preparing magnet: {e}"),
             }
         })
         .detach();
@@ -657,34 +667,29 @@ impl MainPanel {
         cx.notify();
     }
 
-    /// Actually add a torrent, applying the selected file indices (if any),
-    /// then refresh the table. The add itself (including the `torrent_added`
-    /// hook and moving the source file to the configured folder) goes through
-    /// [`HookDispatcher::add_and_dispatch_added`], the shared path also used
-    /// by the folder watcher.
+    /// Actually add a torrent with the selected file indices (if any), then
+    /// refresh the table. Clients may fire host-side side effects (the
+    /// desktop's `torrent_added` webhook and source-file move) internally.
     fn confirm_add(
         &mut self,
-        source: AddTorrentSource,
-        source_path: Option<std::path::PathBuf>,
-        selection: Option<Vec<usize>>,
+        source: UiAddSource,
+        source_path: Option<String>,
+        selection: Option<Vec<u64>>,
         overwrite: bool,
         cx: &mut Context<Self>,
     ) {
-        let api = self.state.api();
-        let hooks = self.state.hooks();
+        let client = self.client.clone();
         cx.spawn(async move |this, cx| {
-            if let Err(e) = hooks
-                .add_and_dispatch_added(
-                    &api,
-                    source.to_add(),
-                    selection,
-                    overwrite,
-                    false,
-                    source_path,
-                )
-                .await
-            {
-                eprintln!("Error adding torrent: {:?}", e);
+            let req = AddTorrentRequest {
+                source,
+                only_files: selection,
+                overwrite,
+                paused: false,
+                list_only: false,
+                source_hint: source_path,
+            };
+            if let Err(e) = client.add_torrent(&req).await {
+                eprintln!("Error adding torrent: {e}");
             }
             let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
         })
@@ -697,8 +702,9 @@ impl MainPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let state = self.state.clone();
-        let panel = cx.new(|cx| TorrentDetailPanel::new(torrent_id, window, cx, state));
+        let panel = cx.new(|cx| {
+            TorrentDetailPanel::new(torrent_id, window, cx, self.client.clone(), self.host.clone())
+        });
         cx.subscribe(
             &panel,
             |this, _entity, event: &TorrentDetailPanelEvent, cx| match event {
@@ -722,20 +728,15 @@ impl MainPanel {
     }
 
     fn on_settings(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let page = cx.new(|cx| SettingsPage::new(_window, cx, self.state.clone()));
-        cx.subscribe(
-            &page,
-            |this, _entity, event: &SettingsPageEvent, cx| match event {
-                SettingsPageEvent::Back => this.close_page(cx),
-            },
-        )
-        .detach();
-        self.active_page = Some(ActivePage::Settings(page));
-        cx.notify();
+        let main = cx.entity().downgrade();
+        if let Some(page) = self.host.open_settings(main, _window, cx) {
+            self.active_page = Some(page);
+            cx.notify();
+        }
     }
 
-    fn on_logs(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let page = cx.new(|cx| LogPage::new(_window, cx, self.state.clone()));
+    fn on_logs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let page = cx.new(|cx| LogPage::new(window, cx, self.client.clone()));
         cx.subscribe(
             &page,
             |this, _entity, event: &LogPageEvent, cx| match event {
@@ -743,17 +744,12 @@ impl MainPanel {
             },
         )
         .detach();
-        self.active_page = Some(ActivePage::Logs(page));
+        self.active_page = Some(page.into());
         cx.notify();
     }
 
-    fn close_page(&mut self, cx: &mut Context<Self>) {
-        self.active_page = None;
-        cx.notify();
-    }
-
-    /// Toggle between light and dark theme, persist the choice to the config
-    /// file, and apply it to the active window.
+    /// Toggle between light and dark theme, persist the choice through the
+    /// host, and apply it to the active window.
     fn toggle_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let is_dark = cx.theme().is_dark();
         let new_mode = if is_dark {
@@ -765,15 +761,8 @@ impl MainPanel {
         // Apply the new theme to the window immediately.
         Theme::change(new_mode, Some(window), cx);
 
-        // Persist the choice to the config file.
-        let mut config = self.state.config();
-        config.theme = new_mode.name().to_string();
-        if let Err(e) = crate::config::write_config(&self.state.config_filename, &config) {
-            eprintln!("Error writing config for theme: {:?}", e);
-        } else {
-            // Update the in-memory shared config so other views see the change.
-            self.state.shared().write().set_config(config);
-        }
+        // Persist the choice through the host (desktop: config file).
+        self.host.persist_theme(new_mode.name());
 
         cx.notify();
     }
@@ -793,6 +782,12 @@ impl Render for MainPanel {
             self.create_add_dialog(entries, _window, cx);
         }
 
+        // Create pending delete dialog now that window is available.
+        let pending_delete = self.pending_delete_dialog.take();
+        if let Some((ids, names)) = pending_delete {
+            self.create_delete_dialog(ids, names, _window, cx);
+        }
+
         v_flex()
             .size_full()
             .gap_0()
@@ -809,9 +804,11 @@ impl Render for MainPanel {
 impl MainPanel {
     /// Render the application title bar: app name/version plus the global
     /// action buttons (add torrent/magnet, settings, theme toggle). Draggable;
-    /// handles macOS traffic-light padding.
+    /// handles macOS traffic-light padding. Buttons for host-provided
+    /// affordances only render when the host advertises them.
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let caps = self.host.capabilities();
         TitleBar::new()
             .child(
                 div()
@@ -823,7 +820,7 @@ impl MainPanel {
                         div()
                             .text_xs()
                             .text_color(theme.muted_foreground)
-                            .child(format!("v{}", librqbit::version())),
+                            .child(self.host.version()),
                     ),
             )
             .child(
@@ -831,14 +828,16 @@ impl MainPanel {
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        Button::new("add-torrent")
-                            .label("Add Torrent…")
-                            .small()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.on_add_torrent_files(window, cx)
-                            })),
-                    )
+                    .when(caps.add_torrent_files, |this| {
+                        this.child(
+                            Button::new("add-torrent")
+                                .label("Add Torrent…")
+                                .small()
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.on_add_torrent_files(window, cx)
+                                })),
+                        )
+                    })
                     .child(
                         Button::new("add-magnet")
                             .label("Add Magnet…")
@@ -847,23 +846,27 @@ impl MainPanel {
                                 cx.listener(|this, _, window, cx| this.on_add_magnet(window, cx)),
                             ),
                     )
-                    .child(
-                        Button::new("settings")
-                            .icon(IconName::Settings)
-                            .small()
-                            .ghost()
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.on_settings(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("logs")
-                            .icon(IconName::SquareTerminal)
-                            .small()
-                            .ghost()
-                            .tooltip("Log viewer")
-                            .on_click(cx.listener(|this, _, window, cx| this.on_logs(window, cx))),
-                    )
+                    .when(caps.settings_page, |this| {
+                        this.child(
+                            Button::new("settings")
+                                .icon(IconName::Settings)
+                                .small()
+                                .ghost()
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.on_settings(window, cx)),
+                                ),
+                        )
+                    })
+                    .when(caps.logs_page, |this| {
+                        this.child(
+                            Button::new("logs")
+                                .icon(IconName::SquareTerminal)
+                                .small()
+                                .ghost()
+                                .tooltip("Log viewer")
+                                .on_click(cx.listener(|this, _, window, cx| this.on_logs(window, cx))),
+                        )
+                    })
                     .child(
                         Button::new("theme")
                             .icon(if cx.theme().is_dark() {
@@ -951,18 +954,13 @@ impl MainPanel {
             )
     }
 
-    /// Render the main content area: the settings or log viewer page when
-    /// open, otherwise the resizable split of torrent table (left) + detail
-    /// panel (right, conditional).
+    /// Render the main content area: the host settings page or log viewer
+    /// page when open, otherwise the resizable split of torrent table (left)
+    /// + detail panel (right, conditional).
     fn render_content(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div().flex_1().min_h_0().child(match &self.active_page {
             // Pages replace the main content.
-            Some(ActivePage::Settings(settings)) => {
-                div().size_full().child(settings.clone()).into_any_element()
-            }
-            Some(ActivePage::Logs(logs)) => {
-                div().size_full().child(logs.clone()).into_any_element()
-            }
+            Some(page) => div().size_full().child(page.clone()).into_any_element(),
             None => v_resizable("main-split")
                 .with_state(&self.resizable_state)
                 .child(
@@ -1014,26 +1012,27 @@ impl MainPanel {
     /// Render the footer showing session-wide download/upload speed, DHT
     /// health, and uptime.
     ///
-    /// Uses the gpui-component [`StatusBar`] with three left-pinned groups
+    /// Uses the gpui-kit [`StatusBar`] with three left-pinned groups
     /// (download, upload, DHT) and a right-pinned uptime, separated by
     /// vertical dividers.
     fn render_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (down_speed, up_speed, fetched, uploaded, uptime) = match &self.footer_stats {
             Some(stats) => (
-                stats.download_speed.to_string(),
-                stats.upload_speed.to_string(),
-                format_bytes(stats.counters.fetched_bytes),
-                format_bytes(stats.counters.uploaded_bytes),
-                format_uptime(stats.uptime_seconds),
+                stats.download_speed.mbps,
+                stats.upload_speed.mbps,
+                stats.fetched_bytes,
+                stats.uploaded_bytes,
+                stats.uptime_seconds,
             ),
-            None => (
-                "—".to_string(),
-                "—".to_string(),
-                "—".to_string(),
-                "—".to_string(),
-                "—".to_string(),
-            ),
+            None => (0.0, 0.0, 0, 0, 0),
         };
+        let (down_speed, up_speed, fetched, uploaded, uptime) = (
+            format_speed(down_speed),
+            format_speed(up_speed),
+            format_bytes(fetched),
+            format_bytes(uploaded),
+            format_uptime(uptime),
+        );
 
         let (dht_color, dht_text) = match self.dht_status {
             Some(DhtFooterStatus::Connected { nodes }) => {
@@ -1075,7 +1074,7 @@ impl MainPanel {
             )
             .left(Separator::vertical())
             // DHT health: green = nodes in the routing table, yellow =
-            // enabled but no nodes yet, red = API error, gray = disabled.
+            // enabled but no nodes yet, red = error, gray = disabled.
             .left(
                 h_flex()
                     .items_center()
@@ -1099,58 +1098,50 @@ impl MainPanel {
     }
 }
 
+/// Create the delete dialog for pending (ids, names) — called from render,
+/// where a `Window` is available.
+impl MainPanel {
+    fn create_delete_dialog(
+        &mut self,
+        ids: Vec<usize>,
+        names: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dialog = cx.new(|cx| DeleteDialog::new(ids, names, window, cx));
+        cx.subscribe(
+            &dialog,
+            |this, _entity, event: &DeleteDialogEvent, cx| match event {
+                DeleteDialogEvent::Cancelled => this.close_dialog(cx),
+                DeleteDialogEvent::Confirmed(ids, delete_files) => {
+                    this.close_dialog(cx);
+                    this.confirm_delete(ids.clone(), *delete_files, cx);
+                }
+            },
+        )
+        .detach();
+        self.dialog = Some(ActiveDialog::Delete(dialog));
+        cx.notify();
+    }
+}
+
 impl Focusable for MainPanel {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
     }
 }
 
-#[cfg(test)]
-mod tests {
-    // Import only what the tests use: a `use super::*` glob would re-import
-    // the `test` attribute macro from the parent's `use gpui::*` glob (the
-    // test-support feature re-exports it), shadowing the built-in `#[test]`
-    // and recursing during expansion.
-    use super::{DhtFooterStatus, DhtStats, dht_footer_status};
-
-    fn dht_stats(v4: usize, v6: usize) -> DhtStats {
-        DhtStats {
-            id: librqbit::dht::Id20::new([0; 20]),
-            outstanding_requests: 0,
-            routing_table_size: v4,
-            routing_table_size_v6: v6,
+/// Placeholder host used only while the placeholder table state is built
+/// before `self.host` is available; never consulted for rendering.
+fn dummy_host() -> Arc<dyn UiHost> {
+    struct Dummy;
+    impl UiHost for Dummy {
+        fn capabilities(&self) -> crate::host::UiCapabilities {
+            crate::host::UiCapabilities::remote()
+        }
+        fn version(&self) -> String {
+            String::new()
         }
     }
-
-    #[test]
-    fn dht_status_connected_sums_routing_tables() {
-        assert_eq!(
-            dht_footer_status(&Ok(dht_stats(39, 3))),
-            DhtFooterStatus::Connected { nodes: 42 }
-        );
-    }
-
-    #[test]
-    fn dht_status_connecting_when_routing_table_empty() {
-        assert_eq!(
-            dht_footer_status(&Ok(dht_stats(0, 0))),
-            DhtFooterStatus::Connecting
-        );
-    }
-
-    #[test]
-    fn dht_status_disabled_on_not_found_error() {
-        assert_eq!(
-            dht_footer_status(&Err(librqbit::ApiError::dht_disabled())),
-            DhtFooterStatus::Disabled
-        );
-    }
-
-    #[test]
-    fn dht_status_error_on_other_error_statuses() {
-        assert_eq!(
-            dht_footer_status(&Err(librqbit::ApiError::unauthorized())),
-            DhtFooterStatus::Error
-        );
-    }
+    Arc::new(Dummy)
 }
