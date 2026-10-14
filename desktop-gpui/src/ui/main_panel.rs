@@ -159,7 +159,6 @@ impl MainPanel {
             status_filter: cx.new(|_cx| {
                 SelectState::new(
                     SearchableVec::new(vec![
-                        "all".to_string(),
                         "initializing".to_string(),
                         "live".to_string(),
                         "paused".to_string(),
