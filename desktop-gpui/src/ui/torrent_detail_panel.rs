@@ -53,9 +53,6 @@ pub struct TorrentDetailPanel {
     file_table_state: Entity<TableState<FileTableDelegate>>,
     peer_table_state: Entity<TableState<PeerTableDelegate>>,
     focus_handle: FocusHandle,
-    /// Whether the window is currently active (focused). When the window is
-    /// minimized or hidden, this is false and we throttle peer-table refreshes.
-    window_active: bool,
     /// Keeps the periodic peer-stats polling task alive for the lifetime of the panel.
     _peer_task: Option<Task<()>>,
 }
@@ -115,17 +112,8 @@ impl TorrentDetailPanel {
             file_table_state,
             peer_table_state,
             focus_handle: cx.focus_handle(),
-            window_active: true,
             _peer_task: None,
         };
-
-        // Track window activation so we can throttle peer-table refreshes when the
-        // window is minimized or hidden (inactive).
-        cx.observe_window_activation(window, |this, window, cx| {
-            this.window_active = window.is_window_active();
-            cx.notify();
-        })
-        .detach();
 
         this.fetch_details(cx);
         this.start_peer_polling(cx);
@@ -236,9 +224,9 @@ impl TorrentDetailPanel {
     }
 
     /// Periodically refresh the peer table (and torrent stats) while the detail
-    /// panel is open. When the window is inactive (minimized/hidden) the refresh
-    /// is throttled to a much longer interval to reduce unnecessary work, mirroring
-    /// `MainPanel::start_stats_polling`.
+    /// panel is open. Mirrors `MainPanel::start_stats_polling`: the refresh is
+    /// not tied to window focus, since on macOS background-app windows stay
+    /// visible and the in-process stats calls are cheap.
     fn start_peer_polling(&mut self, cx: &mut Context<Self>) {
         let api = self.state.api();
         let task = cx.spawn(async move |this, cx| {
@@ -294,17 +282,7 @@ impl TorrentDetailPanel {
                     cx.notify();
                 });
 
-                // Throttle refreshes when the window is inactive.
-                let active = this
-                    .update(cx, |this, _cx| this.window_active)
-                    .unwrap_or(true);
-                if active {
-                    cx.background_executor().timer(Duration::from_secs(1)).await;
-                } else {
-                    cx.background_executor()
-                        .timer(Duration::from_secs(30))
-                        .await;
-                }
+                cx.background_executor().timer(Duration::from_secs(1)).await;
             }
         });
         self._peer_task = Some(task);

@@ -125,8 +125,9 @@ pub struct MainPanel {
     status_filter: Entity<SelectState<SearchableVec<String>>>,
     /// Keeps the periodic stats polling task alive for the lifetime of the panel.
     _stats_task: Option<Task<()>>,
-    /// Whether the window is currently active (focused). When the window is
-    /// minimized or hidden, this is false and we throttle table refreshes.
+    /// Whether the window is currently active (focused). Only used to refresh
+    /// immediately on re-activation; the periodic polling no longer depends
+    /// on it.
     window_active: bool,
     focus_handle: FocusHandle,
 }
@@ -201,8 +202,9 @@ impl MainPanel {
         })
         .detach();
 
-        // Track window activation so we can throttle table refreshes when the
-        // window is minimized or hidden (inactive).
+        // Refresh immediately when the window is re-activated, so the table
+        // and detail panel don't wait for the next polling cycle after the
+        // app was in the background.
         cx.observe_window_activation(window, |this, window, cx| {
             let was_active = this.window_active;
             this.window_active = window.is_window_active();
@@ -250,8 +252,12 @@ impl MainPanel {
     }
 
     /// Periodically refresh session-wide stats (footer) and the torrent table.
-    /// When the window is inactive (minimized/hidden) the table refresh is
-    /// throttled to a much longer interval to reduce unnecessary work.
+    ///
+    /// The table refresh is deliberately NOT tied to window focus: on macOS,
+    /// windows of background apps stay visible, and keying the refresh off
+    /// window activation left rows stale for up to 30s (e.g. a torrent
+    /// finishing initialization while the user was in another app). The
+    /// in-process list+stats call is cheap, so we always poll once per second.
     fn start_stats_polling(&mut self, cx: &mut Context<Self>) {
         // Capture `State` rather than an `Arc<Api>`: `configure()` can rebuild
         // the session, and a captured API handle would keep polling the
@@ -268,19 +274,10 @@ impl MainPanel {
                     cx.notify();
                 });
 
-                // Refresh the torrent table. When the window is inactive we
-                // skip the per-second refresh and only poll occasionally.
-                let active = this
-                    .update(cx, |this, _cx| this.window_active)
-                    .unwrap_or(true);
-                if active {
-                    let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
-                    cx.background_executor().timer(Duration::from_secs(1)).await;
-                } else {
-                    cx.background_executor()
-                        .timer(Duration::from_secs(30))
-                        .await;
-                }
+                // Refresh the torrent table every second regardless of window
+                // focus — see the comment on this method for why.
+                let _ = this.update(cx, |this, cx| this.fetch_torrents(cx));
+                cx.background_executor().timer(Duration::from_secs(1)).await;
             }
         });
         self._stats_task = Some(task);
