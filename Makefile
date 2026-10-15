@@ -142,8 +142,8 @@ WASM_BINDGEN ?= $(shell command -v wasm-bindgen 2>/dev/null || echo $(HOME)/.car
 #   rustup run $(WASM_TOOLCHAIN) cargo install wasm-bindgen-cli --version $(WASM_BINDGEN_VERSION)
 
 # Build the wasm payload. app-daemon embeds it at compile time, so after this
-# run `make daemon` and open http://localhost:3030/web/ — the client is
-# served by the daemon itself on the classic webui's port and path.
+# run `make daemon` and open http://localhost:3080/ — the client is served by
+# the daemon itself, and the WebSocket protocol lives at /ws on the same port.
 .PHONY: web-client-build
 web-client-build:
 # Release by default: the debug payload is ~140 MB and slow to instantiate
@@ -153,8 +153,8 @@ web-client-build:
 		--out-dir web-gpui/dist/pkg \
 		target/$(WASM_TARGET)/$(if $(DEBUG),debug,release)/web_gpui.wasm
 
-# Headless core daemon the UI clients connect to (ws://localhost:3030/ws).
-# Also serves the web client at /web/ (the classic webui's port and path).
+# Headless core daemon the UI clients connect to (ws://localhost:3080/ws).
+# Also serves the web client at /.
 # NOTE: the desktop app's embedded HTTP API defaults to 127.0.0.1:3030 too -
 # disable it there (or quit the app) before running both.
 .PHONY: daemon

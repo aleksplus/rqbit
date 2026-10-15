@@ -33,11 +33,14 @@
     status.textContent = "Loading rqbit web client…";
     document.body.appendChild(status);
 
+    // wasm-bindgen's init (`default`) resolves to the raw wasm exports, not
+    // the wrapped module functions — call `run` on the module namespace,
+    // otherwise the string argument is lost (the client dials a blank URL).
     import("./pkg/web_gpui.js")
-        .then((module) => module.default())
-        .then((wasm) => {
+        .then(async (module) => {
+            await module.default();
             status.remove();
-            return wasm.run(daemon);
+            module.run(daemon);
         })
         .catch((err) => {
             status.textContent = `Failed to start: ${err}. ` +
