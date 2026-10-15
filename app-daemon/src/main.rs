@@ -23,9 +23,9 @@ struct Args {
     download_folder: PathBuf,
 
     /// HTTP + WebSocket listen address. Serves the embedded web client at
-    /// /web/ (the port and path the classic rqbit webui uses) and the
+    /// / (the port and path the classic rqbit webui uses) and the
     /// protocol at /ws.
-    #[arg(long, default_value = "[::]:3030")]
+    #[arg(long, default_value = "[::]:3080")]
     listen: SocketAddr,
 
     /// Enable JSON persistence in this folder (fastresume across restarts).

@@ -318,7 +318,7 @@ pub async fn run_connection(socket: WebSocket, api: Arc<Api>, line_broadcast: Op
 }
 
 /// The WS route plus the embedded web client, served on the daemon's own
-/// port at `/web/` — the same port and path the classic React webui occupies
+/// port at `/` — the same port and path the classic React webui occupies
 /// in the upstream `rqbit server`. `/` redirects there.
 pub fn router(
     api: Arc<Api>,
@@ -334,20 +334,16 @@ pub fn router(
 
 type RouterState = (Arc<Api>, Option<LineBroadcast>);
 
-/// Serve the embedded web client under `/web/` (upstream-webui convention):
-/// `/` and `/web` redirect to `/web/`, whose relative `./pkg/…` asset paths
-/// resolve to `/web/pkg/…`.
+/// Serve the embedded web client under `/` (upstream-webui convention):
+/// `/` and `/web` redirect to `/`, whose relative `./pkg/…` asset paths
+/// resolve to `/pkg/…`.
 async fn serve_static(uri: axum::http::Uri) -> axum::response::Response {
     use axum::http::{header, StatusCode};
     use axum::response::IntoResponse;
 
     let path = uri.path();
     match path {
-        // Upstream serves the webui at `/web/` and sends these there too.
-        "/" | "/web" => {
-            return axum::response::Redirect::to("/web/").into_response();
-        }
-        "/web/" | "/web/index.html" => {
+        "/" | "/index.html" => {
             let html = if crate::embed::APP_BUILT {
                 crate::embed::INDEX_HTML
             } else {
@@ -361,7 +357,7 @@ async fn serve_static(uri: axum::http::Uri) -> axum::response::Response {
         }
         _ => {}
     }
-    if let Some(p) = path.strip_prefix("/web/pkg/") {
+    if let Some(p) = path.strip_prefix("/pkg/") {
         let (body, content_type) = match p {
             "web_gpui.js" => (crate::embed::APP_JS, crate::embed::CONTENT_TYPE_JS),
             "web_gpui_bg.wasm" => (crate::embed::APP_WASM, crate::embed::CONTENT_TYPE_WASM),

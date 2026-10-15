@@ -1,6 +1,6 @@
 //! Static web-client assets embedded into the daemon binary (see `build.rs`).
 //!
-//! Served on the daemon's own port at `/` and `/web/` — the same slot the
+//! Served on the daemon's own port at `/` — the same slot the
 //! classic React webui occupies in the upstream `rqbit server`, so the
 //! browser client needs no separate web server.
 

@@ -10,6 +10,9 @@
 pub mod remote_client;
 
 #[cfg(target_family = "wasm")]
+mod icon_assets;
+
+#[cfg(target_family = "wasm")]
 mod web_host;
 
 #[cfg(target_family = "wasm")]
