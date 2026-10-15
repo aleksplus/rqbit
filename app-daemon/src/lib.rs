@@ -40,10 +40,12 @@ pub async fn start_session(
     disable_dht: bool,
     init_logging: InitLoggingResult,
 ) -> anyhow::Result<Daemon> {
-    let persistence = persistence_folder.map(|folder| {
-        SessionPersistenceConfig::Json {
-            folder: if folder == Path::new("") { None } else { Some(folder) },
-        }
+    let persistence = persistence_folder.map(|folder| SessionPersistenceConfig::Json {
+        folder: if folder == Path::new("") {
+            None
+        } else {
+            Some(folder)
+        },
     });
 
     let dht = if disable_dht {

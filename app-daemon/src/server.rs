@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures::{SinkExt as _, StreamExt as _};
+use librqbit::Api;
 use librqbit::api::{ApiTorrentListOpts, PeerStatsFilter, PeerStatsFilterState};
 use librqbit::tracing_subscriber_config_utils::LineBroadcast;
-use librqbit::Api;
 use rqbit_protocol as proto;
 use rqbit_protocol::codec;
 use rqbit_protocol::conv;
@@ -38,9 +38,9 @@ pub async fn handle_request(api: &Api, req: Request) -> Result<ResponsePayload, 
         ))),
         Request::Details { torrent } => {
             let id = torrent.to_api()?;
-            let resp = api
-                .api_torrent_details(id)
-                .map_err(|e| conv::proto_error_from_api_error(&e, ProtoErrorKind::TorrentNotFound))?;
+            let resp = api.api_torrent_details(id).map_err(|e| {
+                conv::proto_error_from_api_error(&e, ProtoErrorKind::TorrentNotFound)
+            })?;
             // librqbit's details response carries no trackers; resolve them
             // from the managed torrent handle like the desktop client does.
             let mut trackers: Vec<String> = api
@@ -53,9 +53,9 @@ pub async fn handle_request(api: &Api, req: Request) -> Result<ResponsePayload, 
         }
         Request::Stats { torrent } => {
             let id = torrent.to_api()?;
-            let stats = api
-                .api_stats_v1(id)
-                .map_err(|e| conv::proto_error_from_api_error(&e, ProtoErrorKind::TorrentNotFound))?;
+            let stats = api.api_stats_v1(id).map_err(|e| {
+                conv::proto_error_from_api_error(&e, ProtoErrorKind::TorrentNotFound)
+            })?;
             ResponsePayload::Stats(Box::new(proto::TorrentStats::from(&stats)))
         }
         Request::PeerStats { torrent } => {
@@ -67,7 +67,9 @@ pub async fn handle_request(api: &Api, req: Request) -> Result<ResponsePayload, 
                         state: PeerStatsFilterState::All,
                     },
                 )
-                .map_err(|e| conv::proto_error_from_api_error(&e, ProtoErrorKind::TorrentNotLive))?;
+                .map_err(|e| {
+                    conv::proto_error_from_api_error(&e, ProtoErrorKind::TorrentNotLive)
+                })?;
             ResponsePayload::PeerStats(proto::PeerStatsSnapshot::from(&peers))
         }
         Request::SessionStats => ResponsePayload::SessionStats(Box::new(
@@ -83,24 +85,16 @@ pub async fn handle_request(api: &Api, req: Request) -> Result<ResponsePayload, 
             let id = torrent.to_api()?;
             match action {
                 proto::TorrentAction::Pause => {
-                    api.api_torrent_action_pause(id)
-                        .await
-                        .map_err(api_err)?;
+                    api.api_torrent_action_pause(id).await.map_err(api_err)?;
                 }
                 proto::TorrentAction::Start => {
-                    api.api_torrent_action_start(id)
-                        .await
-                        .map_err(api_err)?;
+                    api.api_torrent_action_start(id).await.map_err(api_err)?;
                 }
                 proto::TorrentAction::Forget => {
-                    api.api_torrent_action_forget(id)
-                        .await
-                        .map_err(api_err)?;
+                    api.api_torrent_action_forget(id).await.map_err(api_err)?;
                 }
                 proto::TorrentAction::Delete => {
-                    api.api_torrent_action_delete(id)
-                        .await
-                        .map_err(api_err)?;
+                    api.api_torrent_action_delete(id).await.map_err(api_err)?;
                 }
                 proto::TorrentAction::UpdateOnlyFiles(files) => {
                     let files: std::collections::HashSet<usize> =
@@ -167,7 +161,11 @@ struct ConnState {
 }
 
 /// Serve one WebSocket connection until the client or the socket goes away.
-pub async fn run_connection(socket: WebSocket, api: Arc<Api>, line_broadcast: Option<LineBroadcast>) {
+pub async fn run_connection(
+    socket: WebSocket,
+    api: Arc<Api>,
+    line_broadcast: Option<LineBroadcast>,
+) {
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<WsMessage>();
 
@@ -197,10 +195,12 @@ pub async fn run_connection(socket: WebSocket, api: Arc<Api>, line_broadcast: Op
                 if !state.lock().session_level {
                     continue;
                 }
-                let list = TorrentList::from(&api.api_torrent_list_ext(ApiTorrentListOpts { with_stats: true }));
-                if let Ok(bytes) =
-                    codec::encode_server(&ServerMessage::Push(PushUpdate::TorrentList(Box::new(list))))
-                    && bytes != last_list
+                let list = TorrentList::from(
+                    &api.api_torrent_list_ext(ApiTorrentListOpts { with_stats: true }),
+                );
+                if let Ok(bytes) = codec::encode_server(&ServerMessage::Push(
+                    PushUpdate::TorrentList(Box::new(list)),
+                )) && bytes != last_list
                 {
                     last_list = bytes.clone();
                     if tx.send(WsMessage::Binary(bytes.into())).is_err() {
@@ -208,9 +208,9 @@ pub async fn run_connection(socket: WebSocket, api: Arc<Api>, line_broadcast: Op
                     }
                 }
                 let stats = proto::SessionStats::from(&api.api_session_stats());
-                if let Ok(bytes) =
-                    codec::encode_server(&ServerMessage::Push(PushUpdate::SessionStats(Box::new(stats))))
-                    && bytes != last_stats
+                if let Ok(bytes) = codec::encode_server(&ServerMessage::Push(
+                    PushUpdate::SessionStats(Box::new(stats)),
+                )) && bytes != last_stats
                 {
                     last_stats = bytes.clone();
                     if tx.send(WsMessage::Binary(bytes.into())).is_err() {
@@ -243,8 +243,8 @@ pub async fn run_connection(socket: WebSocket, api: Arc<Api>, line_broadcast: Op
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
                         if state.lock().logs {
-                            let marker =
-                                format!("--- log stream lagged, {n} lines skipped ---\n").into_bytes();
+                            let marker = format!("--- log stream lagged, {n} lines skipped ---\n")
+                                .into_bytes();
                             let frame = codec::encode_server(&ServerMessage::Push(
                                 PushUpdate::LogLines(marker),
                             ))
@@ -319,11 +319,8 @@ pub async fn run_connection(socket: WebSocket, api: Arc<Api>, line_broadcast: Op
 
 /// The WS route plus the embedded web client, served on the daemon's own
 /// port at `/` — the same port and path the classic React webui occupies
-/// in the upstream `rqbit server`. `/` redirects there.
-pub fn router(
-    api: Arc<Api>,
-    line_broadcast: Option<LineBroadcast>,
-) -> axum::Router {
+/// in the upstream `rqbit server`.
+pub fn router(api: Arc<Api>, line_broadcast: Option<LineBroadcast>) -> axum::Router {
     use axum::routing::get;
 
     axum::Router::new()
@@ -335,10 +332,11 @@ pub fn router(
 type RouterState = (Arc<Api>, Option<LineBroadcast>);
 
 /// Serve the embedded web client under `/` (upstream-webui convention):
-/// `/` and `/web` redirect to `/`, whose relative `./pkg/…` asset paths
-/// resolve to `/pkg/…`.
+/// `/` (and `/index.html`) is the HTML, whose relative `./pkg/…` asset paths
+/// resolve to `/pkg/…`. The same router is what the desktop app serves for
+/// its own session (the bundled web view).
 async fn serve_static(uri: axum::http::Uri) -> axum::response::Response {
-    use axum::http::{header, StatusCode};
+    use axum::http::{StatusCode, header};
     use axum::response::IntoResponse;
 
     let path = uri.path();

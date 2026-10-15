@@ -13,7 +13,10 @@ mod local_client;
 mod ui;
 
 mod state;
-use crate::{desktop_host::DesktopHost, events::hold_to_quit_view::HoldToQuitView, local_client::LocalClient, state::State};
+use crate::{
+    desktop_host::DesktopHost, events::hold_to_quit_view::HoldToQuitView,
+    local_client::LocalClient, state::State,
+};
 use rqbit_ui::ui::main_panel::MainPanel;
 impl gpui::Global for State {}
 

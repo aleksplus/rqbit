@@ -24,9 +24,9 @@ use rqbit_protocol::{
 
 use rqbit_ui::client::{AddTorrentRequest, ClientResult, TorrentClient};
 
+use crate::hooks::HookDispatcher;
 use crate::hooks::{HookEvent, TorrentDeletedPayload, TorrentInfo, envelope};
 use crate::state::SharedState;
-use crate::{hooks::HookDispatcher};
 
 pub struct LocalClient {
     shared: Arc<RwLock<SharedState>>,
@@ -44,7 +44,14 @@ impl LocalClient {
 
     /// Fire the `torrent_deleted` hook after a successful delete/forget.
     /// Mirrors the flow the settings/main panel used to inline.
-    fn dispatch_deleted(&self, id: usize, name: Option<String>, info_hash: String, output_folder: String, delete_files: bool) {
+    fn dispatch_deleted(
+        &self,
+        id: usize,
+        name: Option<String>,
+        info_hash: String,
+        output_folder: String,
+        delete_files: bool,
+    ) {
         self.hooks.forget(id);
         self.hooks.dispatch(
             HookEvent::TorrentDeleted,
@@ -129,14 +136,14 @@ impl TorrentClient for LocalClient {
         let id = torrent.to_api()?;
         match action {
             TorrentAction::Pause => {
-                api.api_torrent_action_pause(id)
-                    .await
-                    .map_err(|e| conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest))?;
+                api.api_torrent_action_pause(id).await.map_err(|e| {
+                    conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest)
+                })?;
             }
             TorrentAction::Start => {
-                api.api_torrent_action_start(id)
-                    .await
-                    .map_err(|e| conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest))?;
+                api.api_torrent_action_start(id).await.map_err(|e| {
+                    conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest)
+                })?;
             }
             TorrentAction::Forget | TorrentAction::Delete => {
                 let delete_files = matches!(action, TorrentAction::Delete);
@@ -149,7 +156,9 @@ impl TorrentClient for LocalClient {
                 };
                 // Propagating the error doubles as the success check; the
                 // response body is empty.
-                result.map_err(|e| conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest))?;
+                result.map_err(|e| {
+                    conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest)
+                })?;
                 if let Some(d) = details {
                     // Hook payloads always carry numeric ids (hash ids are a
                     // remote-only addressing form).
@@ -171,7 +180,9 @@ impl TorrentClient for LocalClient {
                     files.iter().map(|i| *i as usize).collect();
                 api.api_torrent_action_update_only_files(id, &files)
                     .await
-                    .map_err(|e| conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest))?;
+                    .map_err(|e| {
+                        conv::proto_error_from_api_error(&e, ProtoErrorKind::BadRequest)
+                    })?;
             }
         }
         Ok(())

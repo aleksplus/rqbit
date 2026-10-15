@@ -153,10 +153,17 @@ web-client-build:
 		--out-dir web-gpui/dist/pkg \
 		target/$(WASM_TARGET)/$(if $(DEBUG),debug,release)/web_gpui.wasm
 
-# Headless core daemon the UI clients connect to (ws://localhost:3080/ws).
-# Also serves the web client at /.
-# NOTE: the desktop app's embedded HTTP API defaults to 127.0.0.1:3030 too -
-# disable it there (or quit the app) before running both.
+# Headless rqbit daemon: serves the web client at http://localhost:3080/ and
+# the WS protocol at /ws. Each process owns its own librqbit session — to see
+# the same torrents in a browser and the desktop app, use the desktop app's
+# bundled web view (default 127.0.0.1:3081) instead of running both.
 .PHONY: daemon
 daemon:
 	cargo run -p app-daemon
+
+# Desktop app: native UI plus a bundled web view of the SAME session at
+# http://127.0.0.1:3081/ (settings → Web View). One librqbit instance serves
+# both. Run `make web-client-build` once so the browser payload is embedded.
+.PHONY: desktop
+desktop:
+	cargo run -p desktop-gpui

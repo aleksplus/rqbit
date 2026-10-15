@@ -60,9 +60,14 @@ async fn handle_request_maps_api_surface() {
 
     // Addressing by a well-formed-but-unknown info hash → TorrentNotFound.
     let bogus = proto::TorrentId::Hash("0".repeat(40));
-    let err = server::handle_request(&api, proto::Request::Details { torrent: bogus.clone() })
-        .await
-        .unwrap_err();
+    let err = server::handle_request(
+        &api,
+        proto::Request::Details {
+            torrent: bogus.clone(),
+        },
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err.kind, proto::ProtoErrorKind::TorrentNotFound);
 
     // Actions on unknown torrents fail, but with a decodable wire error.
@@ -103,72 +108,34 @@ async fn spawn_server_addr() -> (std::net::SocketAddr, tokio::task::JoinHandle<(
     (addr, handle)
 }
 
-/// The daemon serves the embedded web client itself, on its own port, at
-/// `/web/` — the same port and path the classic React webui uses. `/` and
-/// `/web` redirect there. Whether the real wasm payload is embedded depends
-/// on `make web-client-build`; either way the routes answer with the right
-/// content types.
+/// The daemon serves the embedded web client itself, on its own port at `/` —
+/// the same slot the classic React webui occupies in the upstream `rqbit
+/// server`, whose relative `./pkg/…` asset paths resolve to `/pkg/…`. Whether
+/// the real wasm payload is embedded depends on `make web-client-build`;
+/// either way the routes answer with the right content types.
 #[tokio::test]
 async fn web_client_is_served_by_daemon() {
     let (addr, _handle) = spawn_server_addr().await;
 
-    // Upstream-webui convention: root paths redirect to /web/.
-    for path in ["/", "/web"] {
-        let (status, _body, location) = http_get_with_location(addr, path).await;
-        assert_eq!(status, 303, "GET {path}");
-        assert_eq!(location, "/web/", "GET {path}");
-    }
-
-    let (status, body, content_type) = http_get(addr, "/web/").await;
+    let (status, body, content_type) = http_get(addr, "/").await;
     assert_eq!(status, 200);
     assert!(content_type.starts_with("text/html"));
     assert!(body.contains("rqbit"), "page should name rqbit");
 
-    // The wasm-bindgen payload (real or placeholder) under the /web root.
-    let (status, _body, content_type) = http_get(addr, "/web/pkg/web_gpui.js").await;
+    // The wasm-bindgen payload (real or placeholder) under the HTML root.
+    let (status, _body, content_type) = http_get(addr, "/pkg/web_gpui.js").await;
     assert_eq!(status, 200);
     assert!(content_type.starts_with("text/javascript"));
 
-    let (status, _body, content_type) = http_get(addr, "/web/pkg/web_gpui_bg.wasm").await;
+    let (status, _body, content_type) = http_get(addr, "/pkg/web_gpui_bg.wasm").await;
     assert_eq!(status, 200);
     assert_eq!(content_type, "application/wasm");
 
-    // Unknown paths (including the old bare /pkg root) are a clean 404.
-    for path in ["/nope", "/pkg/web_gpui_bg.wasm"] {
+    // Unknown paths (including the old /web root) are a clean 404.
+    for path in ["/nope", "/web/"] {
         let (status, _body, _ct) = http_get(addr, path).await;
         assert_eq!(status, 404, "GET {path}");
     }
-}
-
-async fn http_get_with_location(addr: std::net::SocketAddr, path: &str) -> (u16, String, String) {
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
-    stream
-        .write_all(format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").as_bytes())
-        .await
-        .unwrap();
-    let mut buf = String::new();
-    stream.read_to_string(&mut buf).await.unwrap();
-    let status: u16 = buf
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
-    // Headers = everything before the blank line (the status line included;
-    // splitting at the first CRLF would capture only the status line).
-    let headers = buf
-        .split_once("\r\n\r\n")
-        .map(|(h, _)| h)
-        .unwrap_or(buf.as_str());
-    let location = headers
-        .lines()
-        .find_map(|l| {
-            l.split_once(": ")
-                .filter(|(name, _)| name.eq_ignore_ascii_case("location"))
-                .map(|(_, value)| value.trim().to_string())
-        })
-        .unwrap_or_default();
-    (status, String::new(), location)
 }
 
 /// Minimal HTTP/1.1 GET over raw TCP — enough to assert status line,
@@ -177,7 +144,9 @@ async fn http_get(addr: std::net::SocketAddr, path: &str) -> (u16, String, Strin
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
     stream
-        .write_all(format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").as_bytes())
+        .write_all(
+            format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
         .await
         .unwrap();
     // The body may be binary (the wasm payload); read bytes, decode the
@@ -246,7 +215,9 @@ async fn websocket_roundtrip() {
     let got_list = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let msg = read.next().await.unwrap().unwrap();
-            let tokio_tungstenite::tungstenite::Message::Binary(bytes) = msg else { continue };
+            let tokio_tungstenite::tungstenite::Message::Binary(bytes) = msg else {
+                continue;
+            };
             match codec::decode_server(&bytes).unwrap() {
                 ServerMessage::Push(proto::PushUpdate::TorrentList(_)) => return true,
                 _ => continue,
@@ -273,11 +244,16 @@ async fn websocket_roundtrip() {
     let mut got_response = false;
     while !got_response {
         let msg = read.next().await.unwrap().unwrap();
-        let tokio_tungstenite::tungstenite::Message::Binary(bytes) = msg else { continue };
+        let tokio_tungstenite::tungstenite::Message::Binary(bytes) = msg else {
+            continue;
+        };
         match codec::decode_server(&bytes).unwrap() {
             ServerMessage::Response { id, result } => {
                 assert_eq!(id, 42);
-                assert_eq!(result.unwrap_err().kind, proto::ProtoErrorKind::TorrentNotFound);
+                assert_eq!(
+                    result.unwrap_err().kind,
+                    proto::ProtoErrorKind::TorrentNotFound
+                );
                 got_response = true;
             }
             _ => continue, // pushes may interleave

@@ -23,6 +23,11 @@ gpui = { package = "gpui-pre", version = "=0.3.8" }
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit"] }
 url.workspace = true
 async-trait = { workspace = true }
+# The desktop app bundles the daemon's server (WS protocol + embedded web
+# client) so its own session is reachable from the browser — one librqbit
+# session serves both the native UI and the web view.
+app-daemon = { path = "../app-daemon" }
+axum = { workspace = true }
 rqbit-protocol = { workspace = true, features = ["librqbit"] }
 rqbit-ui = { workspace = true }
 librqbit = { workspace = true, features = [

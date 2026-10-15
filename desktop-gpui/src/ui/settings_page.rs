@@ -609,6 +609,22 @@ fn set_upnp_name(c: &mut RqbitDesktopConfig, v: SharedString) {
     c.upnp.server_friendly_name = if s.is_empty() { None } else { Some(s) };
 }
 
+fn get_web_view_enable(c: &RqbitDesktopConfig) -> bool {
+    !c.web_view.disable
+}
+fn set_web_view_enable(c: &mut RqbitDesktopConfig, v: bool) {
+    c.web_view.disable = !v;
+}
+
+fn get_web_view_addr(c: &RqbitDesktopConfig) -> String {
+    c.web_view.listen_addr.to_string()
+}
+fn set_web_view_addr(c: &mut RqbitDesktopConfig, v: SharedString) {
+    if let Ok(addr) = v.parse() {
+        c.web_view.listen_addr = addr;
+    }
+}
+
 /// Get the current move-torrents-folder configuration value.
 fn get_move_torrents_location(c: &RqbitDesktopConfig) -> String {
     c.move_torrents_folder.to_string_lossy().to_string()
@@ -1217,6 +1233,29 @@ impl Render for SettingsPage {
                                             input_field(config.clone(), get_http_addr, set_http_addr),
                                         )
                                         .layout(Axis::Vertical),
+                                    ]),
+                                ),
+                                // ── Web View ──
+                                SettingPage::new("Web View").group(
+                                    SettingGroup::new().title("Browser UI").items(vec![
+                                        SettingItem::new(
+                                            "Enable web view",
+                                            switch_field(config.clone(), get_web_view_enable, set_web_view_enable),
+                                        )
+                                        .description(
+                                            "Serve the browser UI (the same web client app-daemon serves) \
+                                             for this session, so the same torrents are visible in a browser. \
+                                             Open http://<listen address>/ after applying.",
+                                        ),
+                                        SettingItem::new(
+                                            "Web view listen address",
+                                            input_field(config.clone(), get_web_view_addr, set_web_view_addr),
+                                        )
+                                        .layout(Axis::Vertical)
+                                        .description(
+                                            "Defaults to 127.0.0.1:3081 — a different port than \
+                                             app-daemon's 3080, so both can run at the same time.",
+                                        ),
                                     ]),
                                 ),
                                 // ── UPnP Server ──
