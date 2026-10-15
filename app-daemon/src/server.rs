@@ -317,7 +317,9 @@ pub async fn run_connection(socket: WebSocket, api: Arc<Api>, line_broadcast: Op
     let _ = writer.await;
 }
 
-/// The WS route plus a small human-friendly index.
+/// The WS route plus the embedded web client, served on the daemon's own
+/// port at `/web/` — the same port and path the classic React webui occupies
+/// in the upstream `rqbit server`. `/` redirects there.
 pub fn router(
     api: Arc<Api>,
     line_broadcast: Option<LineBroadcast>,
@@ -325,15 +327,49 @@ pub fn router(
     use axum::routing::get;
 
     axum::Router::new()
-        .route("/", get(index))
         .route("/ws", get(ws_route))
+        .fallback(serve_static)
         .with_state((api, line_broadcast))
 }
 
 type RouterState = (Arc<Api>, Option<LineBroadcast>);
 
-async fn index() -> &'static str {
-    "app-daemon: connect a rqbit UI client via WebSocket at /ws\n"
+/// Serve the embedded web client under `/web/` (upstream-webui convention):
+/// `/` and `/web` redirect to `/web/`, whose relative `./pkg/…` asset paths
+/// resolve to `/web/pkg/…`.
+async fn serve_static(uri: axum::http::Uri) -> axum::response::Response {
+    use axum::http::{header, StatusCode};
+    use axum::response::IntoResponse;
+
+    let path = uri.path();
+    match path {
+        // Upstream serves the webui at `/web/` and sends these there too.
+        "/" | "/web" => {
+            return axum::response::Redirect::to("/web/").into_response();
+        }
+        "/web/" | "/web/index.html" => {
+            let html = if crate::embed::APP_BUILT {
+                crate::embed::INDEX_HTML
+            } else {
+                crate::embed::NOT_BUILT_HTML
+            };
+            return (
+                [(header::CONTENT_TYPE, crate::embed::CONTENT_TYPE_HTML)],
+                html,
+            )
+                .into_response();
+        }
+        _ => {}
+    }
+    if let Some(p) = path.strip_prefix("/web/pkg/") {
+        let (body, content_type) = match p {
+            "web_gpui.js" => (crate::embed::APP_JS, crate::embed::CONTENT_TYPE_JS),
+            "web_gpui_bg.wasm" => (crate::embed::APP_WASM, crate::embed::CONTENT_TYPE_WASM),
+            _ => return (StatusCode::NOT_FOUND, "not found\n").into_response(),
+        };
+        return ([(header::CONTENT_TYPE, content_type)], body).into_response();
+    }
+    (StatusCode::NOT_FOUND, "not found\n").into_response()
 }
 
 async fn ws_route(

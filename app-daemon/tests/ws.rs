@@ -90,12 +90,122 @@ async fn handle_request_maps_api_surface() {
 }
 
 async fn spawn_server() -> String {
+    let (addr, _port) = spawn_server_addr().await;
+    format!("ws://{addr}/ws")
+}
+
+async fn spawn_server_addr() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
     let api = quiet_api().await;
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = app_daemon::server::router(api, None);
-    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-    format!("ws://{addr}/ws")
+    let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    (addr, handle)
+}
+
+/// The daemon serves the embedded web client itself, on its own port, at
+/// `/web/` — the same port and path the classic React webui uses. `/` and
+/// `/web` redirect there. Whether the real wasm payload is embedded depends
+/// on `make web-client-build`; either way the routes answer with the right
+/// content types.
+#[tokio::test]
+async fn web_client_is_served_by_daemon() {
+    let (addr, _handle) = spawn_server_addr().await;
+
+    // Upstream-webui convention: root paths redirect to /web/.
+    for path in ["/", "/web"] {
+        let (status, _body, location) = http_get_with_location(addr, path).await;
+        assert_eq!(status, 303, "GET {path}");
+        assert_eq!(location, "/web/", "GET {path}");
+    }
+
+    let (status, body, content_type) = http_get(addr, "/web/").await;
+    assert_eq!(status, 200);
+    assert!(content_type.starts_with("text/html"));
+    assert!(body.contains("rqbit"), "page should name rqbit");
+
+    // The wasm-bindgen payload (real or placeholder) under the /web root.
+    let (status, _body, content_type) = http_get(addr, "/web/pkg/web_gpui.js").await;
+    assert_eq!(status, 200);
+    assert!(content_type.starts_with("text/javascript"));
+
+    let (status, _body, content_type) = http_get(addr, "/web/pkg/web_gpui_bg.wasm").await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type, "application/wasm");
+
+    // Unknown paths (including the old bare /pkg root) are a clean 404.
+    for path in ["/nope", "/pkg/web_gpui_bg.wasm"] {
+        let (status, _body, _ct) = http_get(addr, path).await;
+        assert_eq!(status, 404, "GET {path}");
+    }
+}
+
+async fn http_get_with_location(addr: std::net::SocketAddr, path: &str) -> (u16, String, String) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    let mut buf = String::new();
+    stream.read_to_string(&mut buf).await.unwrap();
+    let status: u16 = buf
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    // Headers = everything before the blank line (the status line included;
+    // splitting at the first CRLF would capture only the status line).
+    let headers = buf
+        .split_once("\r\n\r\n")
+        .map(|(h, _)| h)
+        .unwrap_or(buf.as_str());
+    let location = headers
+        .lines()
+        .find_map(|l| {
+            l.split_once(": ")
+                .filter(|(name, _)| name.eq_ignore_ascii_case("location"))
+                .map(|(_, value)| value.trim().to_string())
+        })
+        .unwrap_or_default();
+    (status, String::new(), location)
+}
+
+/// Minimal HTTP/1.1 GET over raw TCP — enough to assert status line,
+/// content-type header, and body without pulling an HTTP client dependency.
+async fn http_get(addr: std::net::SocketAddr, path: &str) -> (u16, String, String) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+    stream
+        .write_all(format!("GET {path} HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n").as_bytes())
+        .await
+        .unwrap();
+    // The body may be binary (the wasm payload); read bytes, decode the
+    // header section as ASCII, and keep the body as lossy text (assertions
+    // only grep for ASCII markers).
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).await.unwrap();
+    let header_end = buf
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .unwrap_or(buf.len());
+    let head = String::from_utf8_lossy(&buf[..header_end]).into_owned();
+    let body = String::from_utf8_lossy(&buf[header_end..]).into_owned();
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let headers = head.as_str();
+    let content_type = headers
+        .lines()
+        .find_map(|l| {
+            l.split_once(": ")
+                .filter(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                .map(|(_, value)| value.trim().to_string())
+        })
+        .unwrap_or_default();
+    (status, body, content_type)
 }
 
 /// Full binary-protocol round-trip over a real WebSocket: Ping→Pong,

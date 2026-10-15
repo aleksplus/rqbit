@@ -1,0 +1,41 @@
+[package]
+name = "web-gpui"
+version.workspace = true
+edition = "2024"
+description = "Browser (wasm32-unknown-unknown) build of the rqbit GPUI client, talking to app-daemon over the rqbit-protocol WebSocket"
+license = "MIT"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+# Everything is wasm-only: on native hosts this crate compiles to an empty
+# shell so workspace-wide checks don't drag the web platform into macOS.
+[target.'cfg(target_family = "wasm")'.dependencies]
+# gpui-kit pins the matching GPUI release (gpui-pre); same exact versions as
+# the desktop so the shared views see identical GPUI types.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-kit = "0.7.1"
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8" }
+rqbit-ui = { workspace = true }
+rqbit-protocol = { workspace = true }
+futures = { workspace = true }
+wasm-bindgen = "0.2"
+# The 0.4 series is the current one (matches gpui-pre-web); the ancient 0.2
+# line pulls js-sys 0.2.x, which does not compile against wasm-bindgen 0.2.1xx.
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "BinaryType",
+    "CloseEvent",
+    "console",
+    "ErrorEvent",
+    "Location",
+    "MessageEvent",
+    "Window",
+    "WebSocket",
+] }
+async-trait = { workspace = true }
+
+[features]
+default = []

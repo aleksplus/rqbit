@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>rqbit</title>
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            overflow: hidden;
+            background: #111;
+        }
+        canvas {
+            outline: none;
+        }
+    </style>
+</head>
+<body>
+<script type="module">
+    // The daemon serves this page itself, so the default endpoint is this
+    // origin's own /ws. Override with ?daemon=ws://host:port/ws to connect
+    // to a different daemon.
+    const params = new URLSearchParams(location.search);
+    const daemon = params.get("daemon") ??
+        `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+
+    const status = document.createElement("div");
+    status.style.cssText =
+        "position:absolute;inset:0;display:flex;align-items:center;justify-content:center;" +
+        "color:#888;font-family:sans-serif;font-size:14px;";
+    status.textContent = "Loading rqbit web client…";
+    document.body.appendChild(status);
+
+    import("./pkg/web_gpui.js")
+        .then((module) => module.default())
+        .then((wasm) => {
+            status.remove();
+            return wasm.run(daemon);
+        })
+        .catch((err) => {
+            status.textContent = `Failed to start: ${err}. ` +
+                "Is the client built? (make web-client-build, then restart the daemon)";
+            console.error(err);
+        });
+</script>
+</body>
+</html>

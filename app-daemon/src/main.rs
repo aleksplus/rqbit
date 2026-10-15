@@ -13,14 +13,19 @@ use app_daemon::server;
 use app_daemon::start_session;
 
 #[derive(Parser)]
-#[command(name = "app-daemon", about = "Headless rqbit daemon for rqbit UI clients")]
+#[command(
+    name = "app-daemon",
+    about = "Headless rqbit daemon for rqbit UI clients"
+)]
 struct Args {
     /// Folder where downloaded data is stored.
     #[arg(long, default_value = "downloads")]
     download_folder: PathBuf,
 
-    /// WebSocket listen address for UI clients.
-    #[arg(long, default_value = "127.0.0.1:8555")]
+    /// HTTP + WebSocket listen address. Serves the embedded web client at
+    /// /web/ (the port and path the classic rqbit webui uses) and the
+    /// protocol at /ws.
+    #[arg(long, default_value = "[::]:3030")]
     listen: SocketAddr,
 
     /// Enable JSON persistence in this folder (fastresume across restarts).
