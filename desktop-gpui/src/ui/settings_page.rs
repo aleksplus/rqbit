@@ -625,6 +625,15 @@ fn set_web_view_addr(c: &mut RqbitDesktopConfig, v: SharedString) {
     }
 }
 
+fn get_web_view_port(c: &RqbitDesktopConfig) -> String {
+    c.web_view.listen_addr.port().to_string()
+}
+fn set_web_view_port(c: &mut RqbitDesktopConfig, v: SharedString) {
+    if let Ok(port) = v.parse::<u16>() {
+        c.web_view.listen_addr.set_port(port);
+    }
+}
+
 /// Get the current move-torrents-folder configuration value.
 fn get_move_torrents_location(c: &RqbitDesktopConfig) -> String {
     c.move_torrents_folder.to_string_lossy().to_string()
@@ -1248,13 +1257,23 @@ impl Render for SettingsPage {
                                              Open http://<listen address>/ after applying.",
                                         ),
                                         SettingItem::new(
+                                            "Web view port",
+                                            input_field(config.clone(), get_web_view_port, set_web_view_port),
+                                        )
+                                        .layout(Axis::Vertical)
+                                        .description(
+                                            "TCP port of the browser UI. Editing it only changes \
+                                             the port part of the listen address below.",
+                                        ),
+                                        SettingItem::new(
                                             "Web view listen address",
                                             input_field(config.clone(), get_web_view_addr, set_web_view_addr),
                                         )
                                         .layout(Axis::Vertical)
                                         .description(
-                                            "Defaults to 127.0.0.1:3081 — a different port than \
-                                             app-daemon's 3080, so both can run at the same time.",
+                                            "Full ip:port to bind. Defaults to 127.0.0.1:3081 — \
+                                             a different port than app-daemon's 3080, so both \
+                                             can run at the same time.",
                                         ),
                                     ]),
                                 ),
@@ -1303,6 +1322,28 @@ mod tests {
     use crate::folder_watcher::tests::TempDir;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext as _, TestAppContext, px, size};
+
+    /// The port field must only rewrite the port of the web view listen
+    /// address, and stay in sync with the full-address field.
+    #[test]
+    fn web_view_port_updates_only_port() {
+        use super::{get_web_view_addr, get_web_view_port, set_web_view_addr, set_web_view_port};
+        use crate::config::RqbitDesktopConfig;
+
+        let mut cfg = RqbitDesktopConfig::default();
+        assert_eq!(get_web_view_port(&cfg), "3081");
+
+        set_web_view_port(&mut cfg, "4000".into());
+        assert_eq!(get_web_view_addr(&cfg), "127.0.0.1:4000");
+
+        // Invalid input is ignored, not written.
+        set_web_view_port(&mut cfg, "not-a-port".into());
+        assert_eq!(get_web_view_addr(&cfg), "127.0.0.1:4000");
+
+        // Changing the full address is reflected by the port getter.
+        set_web_view_addr(&mut cfg, "0.0.0.0:5000".into());
+        assert_eq!(get_web_view_port(&cfg), "5000");
+    }
 
     /// End-to-end reproduction of the reported bug: open settings, click the
     /// real Browse button for the autoload folder, answer the (queued, native)
