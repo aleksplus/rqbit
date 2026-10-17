@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust targets
-        run: rustup target add x86_64-apple-darwin aarch64-apple-darwin
+        run: rustup target add aarch64-apple-darwin
 
       # The GPUI web stack needs nightly: gpui-pre-web's `multithreaded`
       # feature pulls wasm_thread, which uses `#![feature(...)]` with no
@@ -43,30 +43,51 @@ jobs:
           rustup run nightly cargo build -p web-gpui --target wasm32-unknown-unknown --release
           wasm-bindgen --target web --out-dir web-gpui/dist/pkg target/wasm32-unknown-unknown/release/web_gpui.wasm
 
-      - name: Build release OSX universal binary (desktop-gpui)
-        run: |
-          cargo build -p desktop-gpui --profile release-github --target x86_64-apple-darwin
-          cargo build -p desktop-gpui --profile release-github --target aarch64-apple-darwin
+      - name: Build release OSX aarch64 app (desktop-gpui)
+        run: cargo build -p desktop-gpui --profile release-github --target aarch64-apple-darwin
 
-      # No `webui` feature: the legacy React web UI requires an npm build and
-      # is superseded by the embedded web client above.
-      - name: Build release OSX universal binary (rqbit CLI)
+      # Package the binary as a proper .app bundle (name, identifier and icon
+      # match [package.metadata.bundle] in desktop-gpui/Cargo.toml) and ship
+      # it as a compressed DMG. Ad-hoc signing: aarch64 macOS refuses to run
+      # unsigned binaries, and the signature must cover the whole bundle.
+      - name: Package arm64 app bundle and DMG
         run: |
-          cargo build -p rqbit --profile release-github --no-default-features --features default-tls,postgres,prometheus --target x86_64-apple-darwin
-          cargo build -p rqbit --profile release-github --no-default-features --features default-tls,postgres,prometheus --target aarch64-apple-darwin
+          APP_NAME=rqbit-gpui-desktop
+          VERSION="${GITHUB_REF_NAME#v}"
+          APP="target/artifacts/${APP_NAME}.app"
 
-      # All artifacts land in the workspace-root target/ (desktop-gpui and
-      # rqbit are workspace members), even when built with -p.
-      - name: Create universal binaries
-        run: |
-          mkdir -p target/artifacts
-          lipo target/x86_64-apple-darwin/release-github/desktop-gpui target/aarch64-apple-darwin/release-github/desktop-gpui -create -output target/artifacts/desktop-gpui-osx-universal
-          lipo target/x86_64-apple-darwin/release-github/rqbit target/aarch64-apple-darwin/release-github/rqbit -create -output target/artifacts/rqbit-osx-universal
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp target/aarch64-apple-darwin/release-github/desktop-gpui "$APP/Contents/MacOS/${APP_NAME}"
+          cp desktop-gpui/icons/icon.icns "$APP/Contents/Resources/"
+
+          cat > "$APP/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>${APP_NAME}</string>
+            <key>CFBundleDisplayName</key><string>rqbit</string>
+            <key>CFBundleExecutable</key><string>${APP_NAME}</string>
+            <key>CFBundleIconFile</key><string>icon.icns</string>
+            <key>CFBundleIdentifier</key><string>com.rqbit.gpui-desktop</string>
+            <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+
+          codesign --force --sign - "$APP"
+
+          hdiutil create -volname "rqbit" -srcfolder "$APP" -ov -format UDZO \
+            target/artifacts/desktop-gpui-osx-aarch64.dmg
 
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           draft: true
           files: |
-            target/artifacts/desktop-gpui-osx-universal
-            target/artifacts/rqbit-osx-universal
+            target/artifacts/desktop-gpui-osx-aarch64.dmg
