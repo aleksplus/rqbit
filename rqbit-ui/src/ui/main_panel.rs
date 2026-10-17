@@ -371,7 +371,7 @@ impl MainPanel {
             let default_folder = client.session_default_folder().await.ok().flatten();
 
             let _ = this.update(cx, |this, cx| {
-                this.table_state.update(cx, |state, cx| {
+                this.table_state.update(cx, |state, _cx| {
                     state
                         .delegate_mut()
                         .set_default_folder(default_folder.as_deref());
