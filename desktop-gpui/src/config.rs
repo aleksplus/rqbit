@@ -233,6 +233,29 @@ impl Default for RqbitDesktopConfigHttpApi {
     }
 }
 
+/// The bundled web view: the same WebSocket protocol (`/ws`) and embedded
+/// browser client (`/`) the standalone `app-daemon` serves, hosted by the
+/// desktop app for its own session. One librqbit instance then serves both
+/// the native UI and the browser UI.
+///
+/// The default address deliberately differs from `app-daemon`'s (3080) so
+/// both processes can run side by side; each still owns its own session.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct RqbitDesktopConfigWebView {
+    pub disable: bool,
+    pub listen_addr: SocketAddr,
+}
+
+impl Default for RqbitDesktopConfigWebView {
+    fn default() -> Self {
+        Self {
+            disable: false,
+            listen_addr: SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 3081)),
+        }
+    }
+}
+
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
 #[serde(default)]
 pub struct RqbitDesktopConfigUpnp {
@@ -272,6 +295,7 @@ pub struct RqbitDesktopConfig {
     pub upnp: RqbitDesktopConfigUpnp,
     pub persistence: RqbitDesktopConfigPersistence,
     pub http_api: RqbitDesktopConfigHttpApi,
+    pub web_view: RqbitDesktopConfigWebView,
 
     #[serde(default)]
     pub ratelimits: LimitsConfig,
@@ -301,6 +325,7 @@ impl Default for RqbitDesktopConfig {
             upnp: Default::default(),
             persistence: Default::default(),
             http_api: Default::default(),
+            web_view: Default::default(),
             ratelimits: Default::default(),
             hooks: Default::default(),
             theme: "light".to_string(),
@@ -335,6 +360,24 @@ mod tests {
         let json = r#"{"default_download_location": "/tmp/dl"}"#;
         let cfg: RqbitDesktopConfig = serde_json::from_str(json).unwrap();
         assert!(cfg.hooks.hooks.is_empty());
+        // Sections added later default sensibly: the web view is on, on its
+        // own port (not app-daemon's 3080), so both can run side by side.
+        assert!(!cfg.web_view.disable);
+        assert_eq!(cfg.web_view.listen_addr, "127.0.0.1:3081".parse().unwrap());
+    }
+
+    #[test]
+    fn web_view_roundtrip() {
+        let cfg = RqbitDesktopConfig {
+            web_view: crate::config::RqbitDesktopConfigWebView {
+                disable: true,
+                listen_addr: "0.0.0.0:4000".parse().unwrap(),
+            },
+            ..Default::default()
+        };
+        let s = serde_json::to_string(&cfg).unwrap();
+        let back: RqbitDesktopConfig = serde_json::from_str(&s).unwrap();
+        assert!(cfg == back);
     }
 
     #[test]

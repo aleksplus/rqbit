@@ -6,7 +6,7 @@
 
 **rqbit** is a bittorrent client written in Rust. Has HTTP API and Web UI, and can be used as a library.
 
-Also has a desktop app built with [Tauri](https://tauri.app/).
+Also has a native desktop app built with [GPUI](https://github.com/zed-industries/zed) (the UI framework behind Zed), and the same client compiled to WebAssembly running in the browser.
 
 ## Usage quick start
 
@@ -30,13 +30,11 @@ Access at http://localhost:3030/web/. See screenshot below (torrent names and sp
 
 ## Desktop app
 
-The desktop app is a [thin wrapper](https://github.com/ikatson/rqbit/blob/main/desktop/src-tauri/src/main.rs) on top of the Web UI frontend.
+The desktop app (`desktop-gpui`) is a native client built with GPUI. It bundles the daemon (`app-daemon`), so a single session serves both the native UI and a web view of the same client in the browser.
 
-Download it in [Releases](https://github.com/ikatson/rqbit/releases) for OSX and Windows. For Linux, build manually with
+Download it in [Releases](https://github.com/aleksplus/rqbit/releases) for OSX, or run from source:
 
-    cargo tauri build
-
-It looks similar to the Web UI (screenshot above).
+    make desktop
 
 ## Streaming support
 
@@ -277,7 +275,9 @@ Supported query parameters, all optional:
 - crates/dht - Distributed Hash Table implementation
 - crates/upnp - upnp port forwarding
 - crates/upnp_serve - upnp MediaServer
-- desktop - desktop app built with [Tauri](https://tauri.app/)
+- desktop-gpui - native desktop app built with GPUI
+- app-daemon - headless daemon exposing the rqbit session to UI clients over WebSocket
+- web-gpui - browser (WebAssembly) build of the GPUI client
 - [librqbit-utp](https://github.com/ikatson/librqbit-utp/) - uTP protocol
 - [librqbit-dualstack-sockets](https://github.com/ikatson/librqbit-dualstack-sockets) - cross-platform IPv6+IPv4 listeners with canonical IPs
 

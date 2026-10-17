@@ -16,15 +16,29 @@ Run Web UI dev
 
     make webui-dev
 
-## Desktop app
+## Desktop app (desktop-gpui)
 
-Stop the devserver, otherwise ports will conflict.
+Build the browser payload once (embedded at compile time into both the
+desktop app and app-daemon):
 
-Install deps
+    make web-client-build
 
-    cargo install tauri-cli
-    make webui-deps
+Run the desktop app:
 
-Run tauri dev
+    make desktop
 
-    cargo tauri dev
+The desktop app bundles the daemon's server: the native UI and the web view
+at http://127.0.0.1:3081/ (settings → Web View) share the SAME session — a
+single librqbit instance serves both. No app-daemon needed.
+
+## Headless daemon (app-daemon)
+
+    make daemon
+
+Serves the web client at http://localhost:3080/ and the WS protocol at /ws.
+
+librqbit has no shared/multi-instance sessions: each process owns its own
+session. Running both at once is fine port-wise (desktop: 3030 HTTP API +
+3081 web view; daemon: 3080), but they hold independent sessions — use the
+desktop app's bundled web view when you want the browser and the native UI
+on the same torrents.

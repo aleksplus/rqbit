@@ -5,13 +5,19 @@ use std::sync::{Arc, Mutex};
 use tracing::{info, warn};
 
 mod config;
+mod desktop_host;
 mod events;
 mod folder_watcher;
 mod hooks;
+mod local_client;
 mod ui;
 
 mod state;
-use crate::{events::hold_to_quit_view::HoldToQuitView, state::State, ui::main_panel::MainPanel};
+use crate::{
+    desktop_host::DesktopHost, events::hold_to_quit_view::HoldToQuitView,
+    local_client::LocalClient, state::State,
+};
+use rqbit_ui::ui::main_panel::MainPanel;
 impl gpui::Global for State {}
 
 use librqbit::tracing_subscriber_config_utils::{InitLoggingOptions, init_logging};
@@ -79,7 +85,12 @@ async fn main() {
         let quit_countdown: Arc<Mutex<Option<Task<()>>>> = Arc::new(Mutex::new(None));
 
         gpui_kit::open_window(window_options, cx, |window, cx| {
-            let main_panel = cx.new(|cx| MainPanel::new(window, cx));
+            let client = Arc::new(LocalClient::new(
+                shared_state.shared(),
+                shared_state.hooks(),
+            ));
+            let host = Arc::new(DesktopHost::new(Arc::new(shared_state.clone())));
+            let main_panel = cx.new(|cx| MainPanel::new(client, host, window, cx));
             cx.new(|_cx| HoldToQuitView {
                 main_panel,
                 quit_countdown: quit_countdown.clone(),

@@ -1,0 +1,33 @@
+[package]
+name = "app-daemon"
+version.workspace = true
+edition = "2024"
+description = "Headless rqbit daemon exposing the Rust Api layer to rqbit UI clients over a WebSocket protocol"
+license = "MIT"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "app-daemon"
+path = "src/main.rs"
+
+[dependencies]
+librqbit = { workspace = true, features = [
+    "tracing-subscriber-utils",
+    "default-tls"
+] }
+rqbit-protocol = { workspace = true, features = ["librqbit"] }
+axum = { workspace = true, features = ["ws"] }
+tokio = { workspace = true, features = ["full"] }
+futures = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+# WS client for integration tests of the binary protocol end-to-end.
+tokio-tungstenite = "0.28"

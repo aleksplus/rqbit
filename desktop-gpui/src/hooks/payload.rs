@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::ui::file_table::FileRow;
+use rqbit_ui::ui::file_table::FileRow;
 
 use super::HookEvent;
 

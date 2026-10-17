@@ -1,5 +1,5 @@
-use crate::ui::main_panel::MainPanel;
 use gpui::*;
+use rqbit_ui::ui::main_panel::MainPanel;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::info;

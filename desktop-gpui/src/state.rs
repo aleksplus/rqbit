@@ -179,6 +179,34 @@ async fn api_from_config(
 
         session.spawn(debug_span!("http_api"), "http_api", http_api_task);
     }
+
+    // The bundled web view: the same WS protocol (`/ws`) and embedded browser
+    // client (`/`) `app-daemon` serves, pointed at this session. One librqbit
+    // instance then serves both the native UI and the browser UI. Spawned on
+    // the session so a settings reconfigure stops and rebinds it like the
+    // HTTP API above.
+    if !config.web_view.disable {
+        if !app_daemon::embed::APP_BUILT {
+            warn!(
+                "web view enabled but the browser client payload is not built; \
+                 run `make web-client-build` and restart. Serving a placeholder page."
+            );
+        }
+        let listen_addr = config.web_view.listen_addr;
+        let api = api.clone();
+        let line_broadcast = init_logging.line_broadcast.clone();
+        let web_view_task = async move {
+            let router = app_daemon::server::router(Arc::new(api), Some(line_broadcast));
+            let listener = tokio::net::TcpListener::bind(listen_addr)
+                .await
+                .with_context(|| format!("error listening on {listen_addr}"))?;
+            tracing::info!(addr = %listen_addr, "web view listening");
+            axum::serve(listener, router)
+                .await
+                .context("web view server error")
+        };
+        session.spawn(debug_span!("web_view"), "web_view", web_view_task);
+    }
     Ok(api)
 }
 
@@ -232,6 +260,9 @@ impl State {
         self.shared.clone()
     }
 
+    /// Convenience accessor; the shared views go through `LocalClient`
+    /// instead, so this is only exercised by tests today.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn api(&self) -> Arc<Api> {
         self.shared.read().api()
     }
@@ -355,6 +386,10 @@ pub(crate) mod tests {
                 disable: true,
                 ..Default::default()
             },
+            web_view: crate::config::RqbitDesktopConfigWebView {
+                disable: true,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -456,6 +491,10 @@ pub(crate) mod tests {
                 listen_addr: "127.0.0.1:39031".parse().unwrap(),
                 read_only: false,
             },
+            web_view: crate::config::RqbitDesktopConfigWebView {
+                disable: false,
+                listen_addr: "127.0.0.1:39032".parse().unwrap(),
+            },
             ..Default::default()
         };
 
@@ -505,5 +544,79 @@ pub(crate) mod tests {
         // configure (verify by reading it back).
         let persisted = crate::config::read_config(&config_filename).unwrap();
         assert!(persisted == bad);
+    }
+
+    /// The bundled web view: a session with `web_view` enabled serves the
+    /// embedded browser client (the same routes `app-daemon` serves) for the
+    /// desktop's own session — this is what makes the web-based view work
+    /// while the desktop app runs, with a single librqbit instance.
+    #[tokio::test]
+    async fn web_view_is_served_by_desktop_session() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let scratch = crate::folder_watcher::tests::TempDir::new("webview-scratch");
+        let config_filename = scratch.path().join("config.json");
+        let config_filename = config_filename.to_str().unwrap().to_owned();
+
+        let mut config = quiet_config();
+        config.web_view = crate::config::RqbitDesktopConfigWebView {
+            disable: false,
+            listen_addr: "127.0.0.1:38991".parse().unwrap(),
+        };
+        let _state = test_state(config, config_filename).await;
+
+        // The server binds in a spawned task; poll until it answers.
+        let mut html = String::new();
+        for _ in 0..100 {
+            let attempt = async {
+                let mut stream = tokio::net::TcpStream::connect("127.0.0.1:38991").await?;
+                stream
+                    .write_all(b"GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+                    .await?;
+                let mut buf = String::new();
+                stream.read_to_string(&mut buf).await?;
+                Ok::<String, std::io::Error>(buf)
+            };
+            if let Ok(buf) = attempt.await {
+                html = buf;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+
+        let status = html
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+        assert_eq!(status, 200, "GET / should serve the web client");
+        assert!(
+            html.to_lowercase().contains("content-type: text/html"),
+            "index must be HTML, got: {}",
+            &html[..html.len().min(300)]
+        );
+        assert!(html.contains("rqbit"), "page should name rqbit");
+
+        // The wasm payload under its relative ./pkg/ path (real or
+        // placeholder — both prove the route is wired to this session).
+        let mut stream = tokio::net::TcpStream::connect("127.0.0.1:38991")
+            .await
+            .unwrap();
+        stream
+            .write_all(b"GET /pkg/web_gpui.js HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut js = String::new();
+        stream.read_to_string(&mut js).await.unwrap();
+        let status = js
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+        assert_eq!(status, 200, "GET /pkg/web_gpui.js");
+        assert!(
+            js.to_lowercase().contains("content-type: text/javascript"),
+            "js payload must have the JS content type"
+        );
     }
 }

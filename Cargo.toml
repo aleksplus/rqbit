@@ -14,13 +14,18 @@ members = [
     "crates/upnp",
     "crates/tracker_comms",
     "crates/upnp-serve",
-    "desktop/src-tauri",
     "desktop-gpui",
+    "app-daemon",
+    "rqbit-protocol",
+    "rqbit-ui",
+    "web-gpui",
 ]
 
-# Everything except desktop
+# The default build (plain `cargo build` / `cargo test`) skips the `rqbit`
+# CLI: its default features enable the React `webui`, which requires
+# `crates/librqbit/webui/dist` to exist. Build it explicitly with
+# `-p rqbit` (e.g. `make devserver`) when needed.
 default-members = [
-    "crates/rqbit",
     "crates/librqbit",
     "crates/buffers",
     "crates/clone_to_owned",
@@ -32,6 +37,8 @@ default-members = [
     "crates/upnp",
     "crates/tracker_comms",
     "crates/upnp-serve",
+    "app-daemon",
+    "rqbit-protocol",
 ]
 
 [workspace.package]
@@ -67,6 +74,8 @@ sha1w = { path = "crates/sha1w", package = "librqbit-sha1-wrapper", version = "9
 tracker_comms = { path = "crates/tracker_comms", package = "librqbit-tracker-comms", version = "9.0.1", default-features = false }
 librqbit-upnp = { path = "crates/upnp", version = "9.0.1" }
 upnp-serve = { path = "crates/upnp-serve", package = "librqbit-upnp-serve", version = "9.0.1", default-features = false }
+rqbit-protocol = { path = "rqbit-protocol", version = "9.0.1" }
+rqbit-ui = { path = "rqbit-ui", version = "9.0.1" }
 
 # External crates
 anyhow = "1"
@@ -139,9 +148,6 @@ signal-hook = "0.3"
 size_format = "1"
 socket2 = "0.6"
 sqlx = { version = "0.9", default-features = false }
-tauri = "2"
-tauri-build = "2"
-tauri-plugin-shell = "2"
 tempfile = "3"
 thiserror = "2"
 tokio = "1"

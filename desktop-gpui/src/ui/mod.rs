@@ -1,9 +1,1 @@
-pub mod add_torrent_dialog;
-pub mod dialogs;
-pub mod file_table;
-pub mod log_page;
-pub mod main_panel;
 pub mod settings_page;
-pub mod torrent_detail_panel;
-pub mod torrent_table;
-pub mod utils;

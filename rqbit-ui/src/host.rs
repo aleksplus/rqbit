@@ -1,0 +1,116 @@
+//! Host abstraction: the parts of the app that only a native desktop (or a
+//! browser) can provide — file dialogs, OS integrations, settings page,
+//! theme persistence. The shared views call into an `Arc<dyn UiHost>` and
+//! stay portable.
+
+use std::future::Future;
+
+use gpui::{AnyView, Context, WeakEntity, Window};
+
+use crate::client::UiAddSource;
+use crate::ui::add_torrent_dialog::AddTorrentEntry;
+use crate::ui::main_panel::MainPanel;
+
+/// Which host-provided affordances the shared UI should render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UiCapabilities {
+    /// Show the "Add Torrent…" (file picker) button.
+    pub add_torrent_files: bool,
+    /// Offer "Open Folder" in the torrent context menu.
+    pub open_folder: bool,
+    /// Show the settings button / page.
+    pub settings_page: bool,
+    /// Show the logs button / page.
+    pub logs_page: bool,
+}
+
+impl UiCapabilities {
+    /// A minimal remote client: magnet/URL add, no OS integrations.
+    pub fn remote() -> Self {
+        Self {
+            add_torrent_files: false,
+            open_folder: false,
+            settings_page: false,
+            logs_page: false,
+        }
+    }
+
+    /// The full desktop experience.
+    pub fn desktop() -> Self {
+        Self {
+            add_torrent_files: true,
+            open_folder: true,
+            settings_page: true,
+            logs_page: true,
+        }
+    }
+}
+
+/// A .torrent file picked through a host file dialog.
+pub struct PickedTorrentFile {
+    /// Local path, when the host has one (desktop). Used by the desktop to
+    /// move the source file after a successful add.
+    pub path: Option<String>,
+    pub name: String,
+    pub bytes: Vec<u8>,
+}
+
+/// Host services for the shared views. All methods have neutral defaults so
+/// a minimal web host only implements what it supports.
+pub trait UiHost: 'static {
+    fn capabilities(&self) -> UiCapabilities;
+
+    /// Version string shown in the title bar.
+    fn version(&self) -> String;
+
+    /// Reveal a folder in the OS file manager.
+    fn open_folder(&self, _path: &str) {}
+
+    /// Persist the theme choice ("dark"/"light").
+    fn persist_theme(&self, _mode: &str) {}
+
+    /// The playlist (M3U8) URL served for a torrent, when the host knows a
+    /// usable HTTP API base. `None` renders the row as "Unavailable".
+    fn playlist_url(&self, _torrent_id: u64) -> Option<String> {
+        None
+    }
+
+    /// Open the host's settings page (rendered full-page inside MainPanel).
+    /// The host subscribes its own "Back" event and must call
+    /// `MainPanel::close_page` through `main` when it fires. `None` = the
+    /// capability is advertised but the page could not open.
+    fn open_settings(
+        &self,
+        _main: WeakEntity<MainPanel>,
+        _window: &mut Window,
+        _cx: &mut Context<MainPanel>,
+    ) -> Option<AnyView> {
+        None
+    }
+
+    /// Pick .torrent files via a native/browser dialog, given app context
+    /// (the desktop uses gpui's `App::prompt_for_paths`). Resolves
+    /// `Ok(vec![])` when the user cancels, `Err` when unsupported.
+    fn pick_torrent_files(
+        &self,
+        cx: &mut gpui::App,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<PickedTorrentFile>, String>> + 'static>>
+    {
+        let _ = cx;
+        Box::pin(async { Err("picking files is not supported here".to_string()) })
+    }
+
+    /// Apply host-side file-selection adjustments to a previewed entry
+    /// (desktop: `file_selection` hooks). Returns hook names for the UI hint.
+    fn adjust_file_selection<'a>(
+        &'a self,
+        _entry: &'a mut AddTorrentEntry,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Vec<String>> + 'a>> {
+        Box::pin(async { Vec::new() })
+    }
+}
+
+/// Convenience: build an entry's source from a picked file.
+pub fn source_from_picked(file: &PickedTorrentFile) -> UiAddSource {
+    UiAddSource::Bytes(file.bytes.clone())
+}

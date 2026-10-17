@@ -10,7 +10,7 @@ use tracing::{debug, warn};
 
 use crate::config::HookConfig;
 use crate::state::SharedState;
-use crate::ui::add_torrent_dialog::AddTorrentEntry;
+use rqbit_ui::ui::add_torrent_dialog::AddTorrentEntry;
 
 use super::HookEvent;
 use super::payload::{
@@ -448,8 +448,9 @@ mod tests {
     use crate::config::{HookConfig, HttpMethod, RqbitDesktopConfigHooks};
     use crate::hooks::http::testutil::serve_once;
     use crate::state::SharedState;
-    use crate::ui::add_torrent_dialog::{AddTorrentEntry, AddTorrentSource};
-    use crate::ui::file_table::FileRow;
+    use rqbit_ui::client::UiAddSource;
+    use rqbit_ui::ui::add_torrent_dialog::AddTorrentEntry;
+    use rqbit_ui::ui::file_table::FileRow;
 
     /// A minimal real session (no DHT, no listener, no persistence) wrapped
     /// in a SharedState with the given hooks config.
@@ -477,7 +478,7 @@ mod tests {
 
     fn test_entry() -> AddTorrentEntry {
         AddTorrentEntry {
-            source: AddTorrentSource::Bytes(vec![]),
+            source: UiAddSource::Bytes(vec![]),
             name: "Test Torrent".into(),
             info_hash: "0123456789abcdef".into(),
             output_folder: "/tmp".into(),

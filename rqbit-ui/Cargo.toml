@@ -1,0 +1,23 @@
+[package]
+name = "rqbit-ui"
+version.workspace = true
+edition = "2024"
+description = "GPUI views and client abstraction shared by the rqbit desktop app and the browser (wasm) client"
+license = "MIT"
+publish = false
+
+[dependencies]
+# gpui-kit pins the matching GPUI release (gpui-pre); the aliases below must
+# stay on the same exact versions as gpui-kit or the GPUI types would split.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui-kit = "0.7.1"
+rqbit-protocol = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+gpui-kit = { version = "0.7.1", features = ["test-support"] }
+
+[features]
+default = []

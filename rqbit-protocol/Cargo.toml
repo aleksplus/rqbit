@@ -1,0 +1,29 @@
+[package]
+name = "rqbit-protocol"
+version.workspace = true
+edition = "2024"
+description = "Wire protocol and mirror DTOs shared by the rqbit GPUI desktop UI, the headless daemon and the browser (wasm) client"
+license = "MIT"
+publish = false
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+# `alloc` for `to_allocvec`; postcard's default features don't include it.
+postcard = { version = "1", default-features = false, features = ["alloc"] }
+librqbit = { workspace = true, optional = true }
+# `sha1-crypto-hash`: sha1w requires exactly one backend, and librqbit only
+# picks one through its own default/tls features, which we don't enable.
+librqbit-core = { workspace = true, optional = true, features = ["sha1-crypto-hash"] }
+
+[dev-dependencies]
+# Conversions are exercised in tests even though the runtime code keeps the
+# dependency optional.
+librqbit = { workspace = true }
+librqbit-core = { workspace = true, features = ["sha1-crypto-hash"] }
+
+[features]
+default = []
+# `From<librqbit::…>` conversions into the mirror DTOs. Enabled by native hosts
+# (desktop LocalClient, app-daemon); the wasm client builds without it and
+# never pulls librqbit.
+librqbit = ["dep:librqbit", "dep:librqbit-core"]
