@@ -24,11 +24,12 @@ Assuming you are downloading to ~/Downloads. By default it'll download to curren
 
 ## Web UI
 
-Access at http://localhost:3030/web/. See screenshot below (torrent names and speeds are simulated).
+Access at http://localhost:3081/web/. See screenshot below (torrent names and speeds are simulated).
 
-<img width="1000" src="https://github.com/user-attachments/assets/d916b3d9-ebbd-462a-889d-df3916cc2681" />
+<img width="3840" height="2560" alt="client-blurred" src="https://github.com/user-attachments/assets/5660aae8-9864-46a8-bb6f-7e269fb580c5" />
 
 ## Desktop app
+<img width="1000" src="https://github.com/user-attachments/assets/9ee6c029-73f0-4ef1-be9a-d5f7fd1907e4" />
 
 The desktop app (`desktop-gpui`) is a native client built with GPUI. It bundles the daemon (`app-daemon`), so a single session serves both the native UI and a web view of the same client in the browser.
 
@@ -55,7 +56,7 @@ rqbit --enable-upnp-server server start ...
 
 ## mDNS advertising
 
-rqbit can advertise its HTTP API on your LAN via mDNS/DNS-SD, so you can open the Web UI at http://rqbit.local:3030/web/ from any device without knowing the server's IP.
+rqbit can advertise its HTTP API on your LAN via mDNS/DNS-SD, so you can open the Web UI at http://rqbit.local:3081/ from any device without knowing the server's IP.
 
 Usage from CLI (requires a non-loopback listen address):
 
@@ -131,8 +132,6 @@ Docker images are published at [ikatson/rqbit](https://hub.docker.com/r/ikatson/
 Just a regular Rust binary build process.
 
     cargo build --release
-
-The "webui" feature requires npm installed.
 
 ## Some useful options
 
@@ -218,7 +217,6 @@ curl -s 'http://127.0.0.1:3030/'
     "GET /torrents/{id_or_infohash}/playlist": "Playlist for supported players",
     "GET /torrents/{id_or_infohash}/stats/v1": "Torrent stats",
     "GET /torrents/{id_or_infohash}/stream/{file_idx}": "Stream a file. Accepts Range header to seek.",
-    "GET /web/": "Web UI",
     "POST /rust_log": "Set RUST_LOG to this post launch (for debugging)",
     "POST /torrents": "Add a torrent here. magnet: or http:// or a local file.",
     "POST /torrents/create": "Create a torrent and start seeding. Body should be a local folder",
