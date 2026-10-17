@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=rqbit
+GenericName=BitTorrent Client
+Comment=Native desktop client for rqbit
+Exec=desktop-gpui
+Icon=rqbit-gpui-desktop
+Terminal=false
+Categories=Network;P2P;FileTransfer;
+Keywords=bittorrent;torrent;download;

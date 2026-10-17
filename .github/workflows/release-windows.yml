@@ -47,16 +47,9 @@ jobs:
         run: cargo build -p desktop-gpui --profile release-github
         shell: bash
 
-      # No `webui` feature: the legacy React web UI requires an npm build and
-      # is superseded by the web client embedded in the desktop app.
-      - name: Build release (rqbit CLI)
-        run: cargo build -p rqbit --profile release-github --no-default-features --features default-tls,postgres,prometheus
-        shell: bash
-
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           draft: true
           files: |
             target/release-github/desktop-gpui.exe
-            target/release-github/rqbit.exe
