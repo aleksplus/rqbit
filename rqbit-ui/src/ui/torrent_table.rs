@@ -248,12 +248,13 @@ fn derive_display_rows(
     let status = filter.status.as_str();
     let filter_active = !needle.is_empty() || !status.is_empty();
     let matches = |r: &TorrentRow| row_matches(r, &needle, status);
+    let default_key = default_folder.map(normalize_folder);
 
     // 1. Partition into folder groups (non-empty key) and standalones.
     let mut groups: HashMap<&str, Vec<&TorrentRow>> = HashMap::new();
     let mut standalones: Vec<&TorrentRow> = Vec::new();
     for row in all_rows {
-        if row.folder_key.is_empty() || Some(row.folder_key.as_str()) == default_folder {
+        if row.folder_key.is_empty() || Some(row.folder_key.as_str()) == default_key.as_deref() {
             standalones.push(row);
         } else {
             groups.entry(row.folder_key.as_str()).or_default().push(row);
@@ -723,9 +724,7 @@ impl TableDelegate for TorrentTableDelegate {
         div()
             .id(("torrent-row", row_ix))
             .when(is_paused, |this| this.text_color(dimmed_text))
-            .when(is_child, |this| {
-                this.border_l_1().border_color(child_guide)
-            })
+            .when(is_child, |this| this.border_l_1().border_color(child_guide))
             .when(is_selected, |this| this.bg(gpui::rgb(0x2a2a3e)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -964,7 +963,11 @@ mod tests {
         // Search hits only the child's name: the whole group stays visible
         // (force-expanded, even though the group was collapsed) while the
         // non-matching standalone is hidden.
-        let all = [row(3, "child-name", "/x"), row(1, "parent", "/x"), row(2, "b", "")];
+        let all = [
+            row(3, "child-name", "/x"),
+            row(1, "parent", "/x"),
+            row(2, "b", ""),
+        ];
         let filter = TorrentFilter {
             search: "child".into(),
             status: String::new(),
@@ -1067,7 +1070,13 @@ mod tests {
             row(1, "zeta", "/x"),
         ];
         assert_eq!(
-            derive(&all, &no_filter(), Some("name"), ColumnSort::Descending, &[]),
+            derive(
+                &all,
+                &no_filter(),
+                Some("name"),
+                ColumnSort::Descending,
+                &[]
+            ),
             vec![(1, 0, 3), (3, 1, 3), (4, 1, 3), (2, 0, 1)]
         );
     }
@@ -1076,7 +1085,11 @@ mod tests {
     fn equal_keys_tiebreak_by_id() {
         // Identical names: the ascending-id tiebreak keeps a stable order in
         // BOTH directions (the parent stays first regardless).
-        let all = [row(3, "same", "/x"), row(1, "same", "/x"), row(2, "same", "")];
+        let all = [
+            row(3, "same", "/x"),
+            row(1, "same", "/x"),
+            row(2, "same", ""),
+        ];
         for dir in [ColumnSort::Ascending, ColumnSort::Descending] {
             assert_eq!(
                 derive(&all, &no_filter(), Some("name"), dir, &[]),

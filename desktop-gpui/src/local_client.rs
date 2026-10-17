@@ -129,7 +129,10 @@ impl TorrentClient for LocalClient {
         // settings change tears down and recreates the session.
         let api = self.api();
         Ok(Some(
-            api.session().default_output_folder().to_string_lossy().into_owned(),
+            api.session()
+                .default_output_folder()
+                .to_string_lossy()
+                .into_owned(),
         ))
     }
 

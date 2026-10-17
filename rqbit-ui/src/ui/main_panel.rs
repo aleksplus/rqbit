@@ -368,11 +368,7 @@ impl MainPanel {
             // Session default download folder — keeps default-folder torrents
             // out of destination-folder grouping. Best-effort: on error keep
             // whatever the delegate already knows.
-            let default_folder = client
-                .session_default_folder()
-                .await
-                .ok()
-                .flatten();
+            let default_folder = client.session_default_folder().await.ok().flatten();
 
             let _ = this.update(cx, |this, cx| {
                 this.table_state.update(cx, |state, cx| {
