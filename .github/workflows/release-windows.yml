@@ -7,6 +7,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Must match the `wasm-bindgen` crate version in Cargo.lock (see Makefile).
+  WASM_BINDGEN_VERSION: 0.2.127
 
 jobs:
   release-windows:
@@ -14,14 +16,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The GPUI web stack needs nightly: gpui-pre-web's `multithreaded`
+      # feature pulls wasm_thread, which uses `#![feature(...)]` with no
+      # opt-out (see Makefile, WASM_TOOLCHAIN).
+      - name: Install nightly toolchain for the wasm web client
+        run: rustup toolchain install nightly --profile minimal --target wasm32-unknown-unknown
+        shell: bash
+
+      - name: Install wasm-bindgen-cli
+        run: |
+          curl -L --proto '=https' --tlsv1.2 -sSf \
+            https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
+          cargo binstall -y wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+        shell: bash
+
+      # The browser client is embedded into the desktop binary at compile
+      # time (app-daemon/build.rs), so this must run before desktop-gpui.
+      - name: Build web client (wasm payload)
+        run: |
+          rustup run nightly cargo build -p web-gpui --target wasm32-unknown-unknown --release
+          wasm-bindgen --target web --out-dir web-gpui/dist/pkg target/wasm32-unknown-unknown/release/web_gpui.wasm
+        shell: bash
+
+      - name: Build release (desktop-gpui)
+        run: cargo build -p desktop-gpui --profile release-github
+        shell: bash
+
       # No `webui` feature: the legacy React web UI requires an npm build and
       # is superseded by the web client embedded in the desktop app.
       - name: Build release (rqbit CLI)
         run: cargo build -p rqbit --profile release-github --no-default-features --features default-tls,postgres,prometheus
+        shell: bash
 
       - uses: softprops/action-gh-release@v3
         with:
           generate_release_notes: true
           draft: true
           files: |
+            target/release-github/desktop-gpui.exe
             target/release-github/rqbit.exe
