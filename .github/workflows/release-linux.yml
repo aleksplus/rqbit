@@ -7,6 +7,11 @@ on:
     tags:
       - "*.*.*"
 
+# Needed by softprops/action-gh-release: generate_release_notes requires
+# write access to contents, and the default GITHUB_TOKEN is read-only.
+permissions:
+  contents: write
+
 jobs:
   build-docker-cross:
     runs-on: ubuntu-latest
