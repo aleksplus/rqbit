@@ -13,9 +13,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use async_trait::async_trait;
+use futures::StreamExt as _;
 use futures::channel::{mpsc, oneshot};
 use futures::stream::LocalBoxStream;
-use futures::StreamExt as _;
 use js_sys::Uint8Array;
 use wasm_bindgen::prelude::*;
 
@@ -103,9 +103,8 @@ impl RemoteClient {
     fn request(
         &self,
         req: Request,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = ClientResult<ResponsePayload>> + 'static>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ClientResult<ResponsePayload>> + 'static>>
+    {
         self.ensure_started();
         let id = self.next_id.get();
         self.next_id.set(id.wrapping_add(1).max(1));
@@ -299,8 +298,7 @@ fn clear_handlers(ws: &web_sys::WebSocket) {
 fn sleep_ms(ms: i32) -> wasm_bindgen_futures::JsFuture {
     let window = web_sys::window().expect("no window");
     let promise = js_sys::Promise::new(&mut |resolve, _| {
-        let _ = window
-            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
+        let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms);
     });
     wasm_bindgen_futures::JsFuture::from(promise)
 }

@@ -558,27 +558,28 @@ impl TableDelegate for TorrentTableDelegate {
         if self.host.capabilities().open_folder {
             // Resolve the output folder lazily (async round-trip; may be a
             // network call on remote clients), then hand it to the host.
-            m = m.item(
-                PopupMenuItem::new("Open Folder").on_click(move |_, _, cx: &mut App| {
-                    let client = client.clone();
-                    let host = host.clone();
-                    cx.spawn(async move |cx| {
-                        let Ok(details) = client
-                            .details(&rqbit_protocol::TorrentId::Id(torrent_id))
-                            .await
-                        else {
-                            return;
-                        };
-                        let path = details.output_folder;
-                        if path.is_empty() {
-                            return;
-                        }
-                        cx.update(|_cx| host.open_folder(&path));
-                    })
-                    .detach();
-                }),
-            )
-            .separator();
+            m = m
+                .item(
+                    PopupMenuItem::new("Open Folder").on_click(move |_, _, cx: &mut App| {
+                        let client = client.clone();
+                        let host = host.clone();
+                        cx.spawn(async move |cx| {
+                            let Ok(details) = client
+                                .details(&rqbit_protocol::TorrentId::Id(torrent_id))
+                                .await
+                            else {
+                                return;
+                            };
+                            let path = details.output_folder;
+                            if path.is_empty() {
+                                return;
+                            }
+                            cx.update(|_cx| host.open_folder(&path));
+                        })
+                        .detach();
+                    }),
+                )
+                .separator();
         }
 
         m.item(
@@ -587,11 +588,7 @@ impl TableDelegate for TorrentTableDelegate {
                 move |_, window, cx: &mut App| {
                     if let Some(main) = main_panel.upgrade() {
                         main.update(cx, |this, cx| {
-                            this.open_delete_dialog(
-                                vec![torrent_id as usize],
-                                window,
-                                cx,
-                            );
+                            this.open_delete_dialog(vec![torrent_id as usize], window, cx);
                         });
                     }
                 }

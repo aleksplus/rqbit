@@ -27,9 +27,7 @@ use futures::StreamExt as _;
 
 use crate::client::{AddTorrentRequest, ClientResult, TorrentClient, UiAddSource};
 use crate::host::UiHost;
-use crate::ui::add_torrent_dialog::{
-    AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry,
-};
+use crate::ui::add_torrent_dialog::{AddTorrentDialog, AddTorrentDialogEvent, AddTorrentEntry};
 
 use crate::ui::dialogs::{DeleteDialog, DeleteDialogEvent, MagnetDialog, MagnetDialogEvent};
 use crate::ui::log_page::{LogPage, LogPageEvent};
@@ -703,7 +701,13 @@ impl MainPanel {
         cx: &mut Context<Self>,
     ) {
         let panel = cx.new(|cx| {
-            TorrentDetailPanel::new(torrent_id, window, cx, self.client.clone(), self.host.clone())
+            TorrentDetailPanel::new(
+                torrent_id,
+                window,
+                cx,
+                self.client.clone(),
+                self.host.clone(),
+            )
         });
         cx.subscribe(
             &panel,
@@ -864,7 +868,9 @@ impl MainPanel {
                                 .small()
                                 .ghost()
                                 .tooltip("Log viewer")
-                                .on_click(cx.listener(|this, _, window, cx| this.on_logs(window, cx))),
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| this.on_logs(window, cx)),
+                                ),
                         )
                     })
                     .child(

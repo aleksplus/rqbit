@@ -11,9 +11,7 @@ use gpui_kit::component::{ActiveTheme, menu::PopupMenuItem, v_flex};
 use rqbit_protocol::{TorrentAction, TorrentId};
 
 use crate::client::{AddTorrentRequest, TorrentClient, UiAddSource};
-use crate::ui::{
-    add_torrent_dialog::AddTorrentEntry, file_table::FileRow, main_panel::MainPanel,
-};
+use crate::ui::{add_torrent_dialog::AddTorrentEntry, file_table::FileRow, main_panel::MainPanel};
 
 /// Binary unit multipliers (powers of 1024), computed once and reused.
 const KIB: f64 = 1024.0;

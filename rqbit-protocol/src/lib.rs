@@ -25,10 +25,10 @@
 //! append new variants at the end of an enum; never reorder or remove.
 
 pub mod codec;
-pub mod error;
-pub mod messages;
 #[cfg(feature = "librqbit")]
 pub mod conv;
+pub mod error;
+pub mod messages;
 pub mod types;
 
 pub use error::{ProtoError, ProtoErrorKind};

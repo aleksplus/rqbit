@@ -15,8 +15,8 @@ use async_trait::async_trait;
 use futures::stream::LocalBoxStream;
 
 use rqbit_protocol::{
-    ApiAddTorrent, AddSource, ClientMessage, DhtStats, PeerStatsSnapshot, ProtoError,
-    PushUpdate, SessionStats, TorrentAction, TorrentDetails, TorrentId, TorrentList, TorrentStats,
+    AddSource, ApiAddTorrent, ClientMessage, DhtStats, PeerStatsSnapshot, ProtoError, PushUpdate,
+    SessionStats, TorrentAction, TorrentDetails, TorrentId, TorrentList, TorrentStats,
 };
 
 /// Result type all client methods return.

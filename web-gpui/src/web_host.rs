@@ -26,9 +26,11 @@ impl UiHost for WebHost {
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<Vec<PickedTorrentFile>, String>> + 'static>>
     {
         Box::pin(async {
-            Err("picking .torrent files is not supported in the browser client yet; \
+            Err(
+                "picking .torrent files is not supported in the browser client yet; \
                  use Add Magnet or a URL"
-                .to_string())
+                    .to_string(),
+            )
         })
     }
 

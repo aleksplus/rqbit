@@ -132,9 +132,9 @@ impl From<&ApiAddTorrentResponse> for ApiAddTorrent {
 impl From<&TorrentStatsState> for TorrentState {
     fn from(state: &TorrentStatsState) -> Self {
         match state {
-            TorrentStatsState::Initializing { paused } => TorrentState::Initializing {
-                paused: *paused,
-            },
+            TorrentStatsState::Initializing { paused } => {
+                TorrentState::Initializing { paused: *paused }
+            }
             TorrentStatsState::Live => TorrentState::Live,
             TorrentStatsState::Paused => TorrentState::Paused,
             TorrentStatsState::Error => TorrentState::Error,
