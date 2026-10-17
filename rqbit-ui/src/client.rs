@@ -79,6 +79,13 @@ pub trait TorrentClient: 'static {
     async fn peer_stats(&self, torrent: &TorrentId) -> ClientResult<PeerStatsSnapshot>;
     /// `Api::api_session_stats`.
     async fn session_stats(&self) -> ClientResult<SessionStats>;
+    /// Session-level info — the default download folder, used to keep
+    /// torrents that merely sit in the session's default download directory
+    /// out of destination-folder grouping in the torrent table. `None` (the
+    /// default) means "unknown / not supported by this client".
+    async fn session_default_folder(&self) -> ClientResult<Option<String>> {
+        Ok(None)
+    }
     /// `Api::api_dht_stats` — `Err` with
     /// [`rqbit_protocol::ProtoErrorKind::DhtDisabled`] when DHT is off.
     async fn dht_stats(&self) -> ClientResult<DhtStats>;

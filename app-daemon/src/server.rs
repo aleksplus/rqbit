@@ -75,6 +75,13 @@ pub async fn handle_request(api: &Api, req: Request) -> Result<ResponsePayload, 
         Request::SessionStats => ResponsePayload::SessionStats(Box::new(
             proto::SessionStats::from(&api.api_session_stats()),
         )),
+        Request::SessionInfo => ResponsePayload::SessionInfo(Box::new(proto::SessionInfo {
+            default_download_folder: api
+                .session()
+                .default_output_folder()
+                .to_string_lossy()
+                .into_owned(),
+        })),
         Request::DhtStats => {
             let stats = api
                 .api_dht_stats()

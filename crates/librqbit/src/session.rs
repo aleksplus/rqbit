@@ -1093,6 +1093,12 @@ impl Session {
         callback(&mut self.db.read().torrents.iter().map(|(id, t)| (*id, t)))
     }
 
+    /// The session-wide default output folder torrents are downloaded to
+    /// when no explicit destination is given.
+    pub fn default_output_folder(&self) -> &Path {
+        &self.output_folder
+    }
+
     /// Add a torrent to the session.
     #[inline(never)]
     pub fn add_torrent<'a>(

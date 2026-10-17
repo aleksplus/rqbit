@@ -7,7 +7,7 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, checkbox::Checkbox, h_flex,
     menu::PopupMenuItem, progress::Progress,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rqbit_protocol::{TorrentDetails, TorrentState};
@@ -68,6 +68,18 @@ pub struct TorrentRow {
     pub eta: String,
     /// ETA in seconds; `None` means unknown / not applicable (sorts last).
     pub eta_raw: Option<u64>,
+    /// Raw destination folder from the torrent list (may be empty).
+    pub output_folder: String,
+    /// Normalized grouping key (`normalize_folder`); empty = never grouped.
+    pub folder_key: String,
+    /// 0 = top-level (standalone or group parent), 1 = indented child row.
+    /// Stamped by [`derive_display_rows`] on the visible copies; `all_rows`
+    /// entries always keep 0.
+    pub depth: u8,
+    /// Members sharing this row's `folder_key`, including itself. 1 =
+    /// standalone row. Stamped by [`derive_display_rows`] on the visible
+    /// copies; `all_rows` entries always keep 1.
+    pub group_size: usize,
 }
 
 impl TorrentRow {
@@ -138,8 +150,26 @@ impl TorrentRow {
                 },
             ),
             eta_raw: live.and_then(|l| l.time_remaining_secs),
+            output_folder: t.output_folder.clone(),
+            folder_key: normalize_folder(&t.output_folder),
+            depth: 0,
+            group_size: 1,
         }
     }
+
+    /// True when this row heads a multi-torrent destination-folder group
+    /// (renders the chevron and child-count badge).
+    pub fn is_parent(&self) -> bool {
+        self.depth == 0 && self.group_size > 1
+    }
+}
+
+/// Normalized destination-folder grouping key: trailing separators trimmed,
+/// nothing else — the strings otherwise come from the same source (the
+/// session's output folder), so no case/Unicode normalization is wanted.
+/// The empty string means "ungrouped".
+fn normalize_folder(folder: &str) -> String {
+    folder.trim_end_matches(['/', '\\']).to_string()
 }
 
 /// Active search/status filter stored in the delegate; applied to `all_rows`
@@ -150,6 +180,144 @@ struct TorrentFilter {
     search: String,
     /// Exact match against the torrent state; empty = all statuses.
     status: String,
+}
+
+/// Whether a row passes the given (already lowercased/trimmed) search needle
+/// and exact status match. Empty needle/status means "no constraint".
+fn row_matches(r: &TorrentRow, needle: &str, status: &str) -> bool {
+    (needle.is_empty() || r.name.to_lowercase().contains(needle))
+        && (status.is_empty() || r.state == status)
+}
+
+/// Ordering comparator for a sortable column key; larger == "greater".
+/// Uses the raw numeric fields directly — no string re-parsing. Unknown (or
+/// absent) keys compare Equal; callers tie-break by id.
+fn column_key_cmp(key: Option<&str>) -> impl Fn(&TorrentRow, &TorrentRow) -> std::cmp::Ordering {
+    let key = key.unwrap_or("").to_string();
+    move |a, b| match key.as_str() {
+        "name" => a.name.cmp(&b.name),
+        "state" => a.state.cmp(&b.state),
+        "progress" => a
+            .progress_raw
+            .partial_cmp(&b.progress_raw)
+            .unwrap_or(std::cmp::Ordering::Equal),
+        "peers" => a.peers_raw.cmp(&b.peers_raw),
+        "down" => a.down_speed_raw.total_cmp(&b.down_speed_raw),
+        "downloaded" => a.downloaded_raw.cmp(&b.downloaded_raw),
+        "up" => a.up_speed_raw.total_cmp(&b.up_speed_raw),
+        "uploaded" => a.uploaded_raw.cmp(&b.uploaded_raw),
+        "eta" => {
+            // `None` (unknown ETA) sorts last in ascending order.
+            match (a.eta_raw, b.eta_raw) {
+                (Some(a), Some(b)) => a.cmp(&b),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        }
+        _ => std::cmp::Ordering::Equal,
+    }
+}
+
+/// Derive the flat list of visible display rows from `all_rows`:
+/// filter → group by destination folder → expand → sort → flatten.
+///
+/// Grouping is fully derived from the data — there are no stored parent
+/// links. Within a folder the lowest-id member (the torrent added first,
+/// since ids increase monotonically) is the parent and always renders first;
+/// the others become indented child rows. Deleting the parent therefore
+/// promotes the next-oldest member on the next refresh, and a folder that
+/// shrinks to a single torrent renders as a standalone row again.
+///
+/// Torrents whose destination is the session's DEFAULT download folder
+/// (`default_folder`, normalized the same way as `folder_key`) never group:
+/// every add lands there unless pointed elsewhere, so grouping it would
+/// collapse the whole list into one group.
+///
+/// While a filter is active, a group survives when ANY member matches, and
+/// it is force-expanded so matching and sibling rows stay visible together.
+fn derive_display_rows(
+    all_rows: &[TorrentRow],
+    filter: &TorrentFilter,
+    sort_key: Option<&str>,
+    sort_dir: ColumnSort,
+    collapsed: &HashSet<String>,
+    default_folder: Option<&str>,
+) -> Vec<TorrentRow> {
+    let needle = filter.search.trim().to_lowercase();
+    let status = filter.status.as_str();
+    let filter_active = !needle.is_empty() || !status.is_empty();
+    let matches = |r: &TorrentRow| row_matches(r, &needle, status);
+
+    // 1. Partition into folder groups (non-empty key) and standalones.
+    let mut groups: HashMap<&str, Vec<&TorrentRow>> = HashMap::new();
+    let mut standalones: Vec<&TorrentRow> = Vec::new();
+    for row in all_rows {
+        if row.folder_key.is_empty() || Some(row.folder_key.as_str()) == default_folder {
+            standalones.push(row);
+        } else {
+            groups.entry(row.folder_key.as_str()).or_default().push(row);
+        }
+    }
+
+    // 2. Build display units. `unit[0]` is the parent; a unit renders either
+    // all of its members (expanded) or just the parent (collapsed).
+    let mut units: Vec<Vec<TorrentRow>> = Vec::new();
+    for (key, mut members) in groups {
+        members.sort_by_key(|r| r.id);
+        if filter_active && !members.iter().any(|r| matches(r)) {
+            continue;
+        }
+        let expanded = filter_active || !collapsed.contains(key);
+        let size = members.len();
+        let unit: Vec<TorrentRow> = if expanded {
+            members.iter().map(|r| (*r).clone()).collect()
+        } else {
+            vec![members[0].clone()]
+        }
+        .into_iter()
+        .map(|mut r| {
+            r.group_size = size;
+            r
+        })
+        .collect();
+        units.push(unit);
+    }
+    for row in standalones {
+        if filter_active && !matches(row) {
+            continue;
+        }
+        units.push(vec![row.clone()]);
+    }
+
+    // 3. Sort: the active column orders the top-level units by their
+    // parent's key and the children within each unit; the parent always
+    // stays positionally first. Every arm tie-breaks by ascending id — the
+    // list arrives in HashMap order, so input position must never matter.
+    let key_cmp = column_key_cmp(sort_key);
+    let dir_cmp = |a: &TorrentRow, b: &TorrentRow| match sort_dir {
+        ColumnSort::Default => a.id.cmp(&b.id),
+        ColumnSort::Ascending => key_cmp(a, b).then(a.id.cmp(&b.id)),
+        ColumnSort::Descending => key_cmp(a, b).reverse().then(a.id.cmp(&b.id)),
+    };
+    for unit in &mut units {
+        unit[1..].sort_by(|a, b| dir_cmp(a, b));
+    }
+    units.sort_by(|a, b| dir_cmp(&a[0], &b[0]));
+
+    // 4. Flatten, tagging child rows.
+    units
+        .into_iter()
+        .flat_map(|unit| {
+            unit.into_iter()
+                .enumerate()
+                .map(|(i, mut r)| {
+                    r.depth = (i > 0) as u8;
+                    r
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Table delegate that holds torrent row data.
@@ -171,6 +339,14 @@ pub struct TorrentTableDelegate {
     sort_col_ix: Option<usize>,
     /// Currently active sort direction.
     sort_dir: ColumnSort,
+    /// Folder keys whose groups the user collapsed. Groups are expanded by
+    /// default, so this starts (and mostly stays) empty. Keyed by folder, so
+    /// collapse state survives refreshes and parent promotion alike.
+    collapsed_folders: HashSet<String>,
+    /// Normalized key of the session's default download folder, refreshed by
+    /// the panel alongside the torrent list. Torrents sitting there are never
+    /// grouped (see [`derive_display_rows`]); `None` = unknown.
+    default_folder_key: Option<String>,
     /// Weak handle to the parent [`MainPanel`] so the context menu can open dialogs.
     main_panel: WeakEntity<MainPanel>,
     /// Data source and host services for the context-menu actions.
@@ -206,6 +382,8 @@ impl TorrentTableDelegate {
             anchor_row: None,
             sort_col_ix: None,
             sort_dir: ColumnSort::Default,
+            collapsed_folders: HashSet::new(),
+            default_folder_key: None,
             main_panel,
             client,
             host,
@@ -220,83 +398,80 @@ impl TorrentTableDelegate {
         self.apply_filter();
     }
 
-    /// Recompute the visible `rows` from `all_rows` using the stored filter:
-    /// search text matches the name as a case-insensitive substring, status
-    /// must match the torrent's `state` exactly. Called after every data
-    /// refresh and by [`TorrentTableDelegate::set_filter`], so the view stays
-    /// correct even as torrent statuses update live.
+    /// Record the session's default download folder (normalized), keeping
+    /// its torrents out of destination-folder grouping. Refreshed by the
+    /// panel alongside the torrent list.
+    pub fn set_default_folder(&mut self, folder: Option<&str>) {
+        let key = folder.map(normalize_folder);
+        if key != self.default_folder_key {
+            self.default_folder_key = key;
+            self.apply_filter();
+        }
+    }
+
+    /// Whether a search text or status filter is currently constraining the
+    /// visible rows. While true, matching groups are force-expanded.
+    fn filter_active(&self) -> bool {
+        !self.filter.search.trim().is_empty() || !self.filter.status.is_empty()
+    }
+
+    /// Recompute the visible `rows` from `all_rows`: apply the stored filter
+    /// (search text matches the name as a case-insensitive substring, status
+    /// must match the torrent's `state` exactly — a folder group survives
+    /// when ANY member matches), group same-folder torrents into
+    /// parent/child rows, and order everything per the active sort. Called
+    /// after every data refresh and by
+    /// [`TorrentTableDelegate::set_filter`], so the view stays correct even
+    /// as torrent statuses update live.
     pub fn apply_filter(&mut self) {
-        let needle = self.filter.search.trim().to_lowercase();
-        let status = self.filter.status.clone();
-        self.rows = self
-            .all_rows
-            .iter()
-            .filter(|r| {
-                if !needle.is_empty() && !r.name.to_lowercase().contains(&needle) {
-                    return false;
-                }
-                if !status.is_empty() && r.state != status {
-                    return false;
-                }
-                true
-            })
-            .cloned()
-            .collect();
+        let sort_key = self
+            .sort_col_ix
+            .and_then(|ix| self.columns.get(ix))
+            .map(|c| c.key.to_string());
+        self.rows = derive_display_rows(
+            &self.all_rows,
+            &self.filter,
+            sort_key.as_deref(),
+            self.sort_dir,
+            &self.collapsed_folders,
+            self.default_folder_key.as_deref(),
+        );
         // Row indices shifted, so any index-based selection is now stale.
         self.selected_rows.clear();
         self.anchor_row = None;
-        // Keep the visible rows ordered per the active sort.
-        self.apply_sort();
+        // Drop collapse state for folders that no longer have any members.
+        let live: HashSet<&str> = self
+            .all_rows
+            .iter()
+            .filter(|r| !r.folder_key.is_empty())
+            .map(|r| r.folder_key.as_str())
+            .collect();
+        self.collapsed_folders.retain(|k| live.contains(k.as_str()));
     }
 
-    /// Apply the currently persisted sort (`sort_col_ix` / `sort_dir`) to
-    /// `self.rows`. No-op when no sort is active. Used both after a manual
-    /// header click and after each data refresh so the sort survives updates.
-    fn apply_sort(&mut self) {
-        let Some(col_ix) = self.sort_col_ix else {
+    /// Toggle a folder group between collapsed and expanded, preserving the
+    /// current selection by torrent id across the row-index shift (same
+    /// pattern as `MainPanel::install_rows`).
+    pub fn toggle_folder(&mut self, folder_key: &str) {
+        if folder_key.is_empty() {
             return;
-        };
-        let Some(col) = self.columns.get(col_ix) else {
-            return;
-        };
-        let key = col.key.as_ref().to_string();
-
-        // Ordering comparator for the active column. Larger == "greater".
-        // Uses the raw numeric fields directly — no string re-parsing.
-        let cmp = |a: &TorrentRow, b: &TorrentRow| -> std::cmp::Ordering {
-            match key.as_str() {
-                "name" => a.name.cmp(&b.name),
-                "state" => a.state.cmp(&b.state),
-                "progress" => a
-                    .progress_raw
-                    .partial_cmp(&b.progress_raw)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-                "peers" => a.peers_raw.cmp(&b.peers_raw),
-                "down" => a.down_speed_raw.total_cmp(&b.down_speed_raw),
-                "downloaded" => a.downloaded_raw.cmp(&b.downloaded_raw),
-                "up" => a.up_speed_raw.total_cmp(&b.up_speed_raw),
-                "uploaded" => a.uploaded_raw.cmp(&b.uploaded_raw),
-                "eta" => {
-                    // `None` (unknown ETA) sorts last in ascending order.
-                    match (a.eta_raw, b.eta_raw) {
-                        (Some(a), Some(b)) => a.cmp(&b),
-                        (Some(_), None) => std::cmp::Ordering::Less,
-                        (None, Some(_)) => std::cmp::Ordering::Greater,
-                        (None, None) => std::cmp::Ordering::Equal,
-                    }
-                }
-                _ => std::cmp::Ordering::Equal,
-            }
-        };
-
-        match self.sort_dir {
-            ColumnSort::Default => self.rows.sort_by_key(|r| r.id),
-            ColumnSort::Ascending => self.rows.sort_by(cmp),
-            ColumnSort::Descending => {
-                self.rows.sort_by(cmp);
-                self.rows.reverse();
-            }
         }
+        if !self.collapsed_folders.remove(folder_key) {
+            self.collapsed_folders.insert(folder_key.to_string());
+        }
+        let prev: HashSet<u64> = self
+            .selected_rows
+            .iter()
+            .filter_map(|&ix| self.rows.get(ix).map(|r| r.id))
+            .collect();
+        self.apply_filter();
+        self.selected_rows = self
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| prev.contains(&r.id))
+            .map(|(ix, _)| ix)
+            .collect();
     }
 }
 
@@ -352,7 +527,67 @@ impl TableDelegate for TorrentTableDelegate {
                             }),
                     )
             }
-            "name" => div().child(row.name.clone()),
+            "name" => {
+                let theme = cx.theme();
+                let is_parent = row.is_parent();
+                let mut cell = h_flex().items_center().gap_1();
+                // Fixed-width chevron column: parents get the expand/collapse
+                // toggle, children the indent, standalones a zero-width
+                // spacer — all names stay vertically aligned.
+                if is_parent {
+                    let key = row.folder_key.clone();
+                    let expanded = self.filter_active() || !self.collapsed_folders.contains(&key);
+                    let table_state = cx.entity().clone();
+                    cell = cell.child(
+                        div()
+                            .size(px(20.))
+                            .flex()
+                            .flex_none()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .child(
+                                Icon::new(if expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .small(),
+                            )
+                            // Toggle on press. Stopping propagation keeps both
+                            // the row's multi-select handler and the
+                            // framework's row click (selection -> detail
+                            // panel) from firing — same mechanism as the
+                            // select checkbox.
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                table_state.update(cx, |state, cx| {
+                                    state.delegate_mut().toggle_folder(&key);
+                                    cx.notify();
+                                });
+                            }),
+                    );
+                } else {
+                    let indent = if row.depth == 1 { px(20.) } else { px(0.) };
+                    cell = cell.child(div().flex_none().w(indent));
+                }
+                cell = cell.child(div().child(row.name.clone()));
+                // Muted child-count badge next to the parent's name. The
+                // parent keeps showing its own stats (no aggregation).
+                if is_parent {
+                    cell = cell.child(
+                        div()
+                            .ml_1()
+                            .px_1()
+                            .rounded_sm()
+                            .bg(theme.muted)
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .child(format!("+{}", row.group_size - 1)),
+                    );
+                }
+                cell
+            }
             "state" => {
                 // Status icon tinted by tone: green arrows while live (down
                 // while downloading, up when seeding after completion), a
@@ -460,11 +695,9 @@ impl TableDelegate for TorrentTableDelegate {
         // (which replace `self.rows` wholesale).
         self.sort_col_ix = Some(col_ix);
         self.sort_dir = sort;
-        self.apply_sort();
-
-        // Row indices shifted, so any index-based selection is now stale.
-        self.selected_rows.clear();
-        self.anchor_row = None;
+        // Re-derives `rows` (filtering, grouping, and ordering); it also
+        // clears the index-based selection, which just went stale.
+        self.apply_filter();
         cx.notify();
     }
 
@@ -483,9 +716,16 @@ impl TableDelegate for TorrentTableDelegate {
             .get(row_ix)
             .is_some_and(|r| r.tone == RowTone::Paused);
         let dimmed_text = cx.theme().muted_foreground;
+        // Subtle left guide on grouped child rows; hoisted like the text
+        // color so the style closure doesn't need to borrow `cx`.
+        let child_guide = cx.theme().border;
+        let is_child = self.rows.get(row_ix).is_some_and(|r| r.depth == 1);
         div()
             .id(("torrent-row", row_ix))
             .when(is_paused, |this| this.text_color(dimmed_text))
+            .when(is_child, |this| {
+                this.border_l_1().border_color(child_guide)
+            })
             .when(is_selected, |this| this.bg(gpui::rgb(0x2a2a3e)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -582,6 +822,33 @@ impl TableDelegate for TorrentTableDelegate {
                 .separator();
         }
 
+        // Parent rows offer deleting the whole folder group at once. Ids are
+        // collected from `all_rows` so collapsed (hidden) members are
+        // included; the existing bulk delete dialog handles the rest.
+        if row.is_parent() {
+            let ids: Vec<usize> = self
+                .all_rows
+                .iter()
+                .filter(|r| r.folder_key == row.folder_key)
+                .map(|r| r.id as usize)
+                .collect();
+            let count = ids.len();
+            m = m
+                .item(
+                    PopupMenuItem::new(format!("Delete Group ({count})…")).on_click({
+                        let main_panel = self.main_panel.clone();
+                        move |_, window, cx: &mut App| {
+                            if let Some(main) = main_panel.upgrade() {
+                                main.update(cx, |this, cx| {
+                                    this.open_delete_dialog(ids.clone(), window, cx);
+                                });
+                            }
+                        }
+                    }),
+                )
+                .separator();
+        }
+
         m.item(
             PopupMenuItem::new(format!("Delete: {torrent_name}")).on_click({
                 let main_panel = self.main_panel.clone();
@@ -594,5 +861,275 @@ impl TableDelegate for TorrentTableDelegate {
                 }
             }),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // NOTE: no `use super::*` here — it would pull gpui's own `#[test]`
+    // attribute macro (re-exported via `use gpui::*` above) into scope and
+    // shadow the builtin `#[test]`.
+    use super::{RowTone, TorrentFilter, TorrentRow, derive_display_rows, normalize_folder};
+    use gpui_kit::component::table::ColumnSort;
+    use std::collections::HashSet;
+
+    fn row(id: u64, name: &str, folder: &str) -> TorrentRow {
+        row_with_state(id, name, folder, "live")
+    }
+
+    fn row_with_state(id: u64, name: &str, folder: &str, state: &str) -> TorrentRow {
+        TorrentRow {
+            id,
+            name: name.to_string(),
+            state: state.to_string(),
+            progress: "0%".to_string(),
+            progress_raw: 0.0,
+            peers: "0/0".to_string(),
+            tone: RowTone::Normal,
+            peers_raw: 0,
+            down_speed: "0".to_string(),
+            down_speed_raw: 0.0,
+            up_speed: "0".to_string(),
+            up_speed_raw: 0.0,
+            downloaded: "0 B".to_string(),
+            downloaded_raw: 0,
+            uploaded: "0 B".to_string(),
+            uploaded_raw: 0,
+            eta: "—".to_string(),
+            eta_raw: None,
+            output_folder: folder.to_string(),
+            folder_key: normalize_folder(folder),
+            depth: 0,
+            group_size: 1,
+        }
+    }
+
+    fn no_filter() -> TorrentFilter {
+        TorrentFilter {
+            search: String::new(),
+            status: String::new(),
+        }
+    }
+
+    /// (id, depth, group_size) summary — enough to assert row structure
+    /// without needing `PartialEq` on `TorrentRow`.
+    fn derive(
+        all: &[TorrentRow],
+        filter: &TorrentFilter,
+        sort_key: Option<&str>,
+        dir: ColumnSort,
+        collapsed: &[&str],
+    ) -> Vec<(u64, u8, usize)> {
+        derive_with_default(all, filter, sort_key, dir, collapsed, None)
+    }
+
+    fn derive_with_default(
+        all: &[TorrentRow],
+        filter: &TorrentFilter,
+        sort_key: Option<&str>,
+        dir: ColumnSort,
+        collapsed: &[&str],
+        default_folder: Option<&str>,
+    ) -> Vec<(u64, u8, usize)> {
+        let collapsed: HashSet<String> = collapsed.iter().map(|s| s.to_string()).collect();
+        derive_display_rows(all, filter, sort_key, dir, &collapsed, default_folder)
+            .iter()
+            .map(|r| (r.id, r.depth, r.group_size))
+            .collect()
+    }
+
+    #[test]
+    fn groups_by_folder_lowest_id_is_parent() {
+        // ids 3, 1 share "/x"; id 2 is standalone. The lowest id (added
+        // first) parents the group, and the group's children always follow
+        // their parent directly.
+        let all = [row(3, "c", "/x"), row(1, "a", "/x"), row(2, "b", "")];
+        assert_eq!(
+            derive(&all, &no_filter(), None, ColumnSort::Default, &[]),
+            vec![(1, 0, 2), (3, 1, 2), (2, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn collapsed_group_shows_only_parent() {
+        let all = [row(3, "c", "/x"), row(1, "a", "/x"), row(2, "b", "")];
+        assert_eq!(
+            derive(&all, &no_filter(), None, ColumnSort::Default, &["/x"]),
+            vec![(1, 0, 2), (2, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn filter_matching_child_shows_whole_group() {
+        // Search hits only the child's name: the whole group stays visible
+        // (force-expanded, even though the group was collapsed) while the
+        // non-matching standalone is hidden.
+        let all = [row(3, "child-name", "/x"), row(1, "parent", "/x"), row(2, "b", "")];
+        let filter = TorrentFilter {
+            search: "child".into(),
+            status: String::new(),
+        };
+        assert_eq!(
+            derive(&all, &filter, None, ColumnSort::Default, &["/x"]),
+            vec![(1, 0, 2), (3, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn filter_status_uses_any_member() {
+        // Only one member is "paused": the whole group survives the status
+        // filter; the live standalone does not.
+        let all = [
+            row_with_state(3, "c", "/x", "paused"),
+            row(1, "a", "/x"),
+            row(2, "b", ""),
+        ];
+        let filter = TorrentFilter {
+            search: String::new(),
+            status: "paused".into(),
+        };
+        assert_eq!(
+            derive(&all, &filter, None, ColumnSort::Default, &[]),
+            vec![(1, 0, 2), (3, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn parent_promotion_on_delete() {
+        // After the parent (id 1) is deleted, the next-oldest member (id 3)
+        // becomes the parent of the remaining child (id 5).
+        let all = [row(5, "e", "/x"), row(3, "c", "/x")];
+        assert_eq!(
+            derive(&all, &no_filter(), None, ColumnSort::Default, &[]),
+            vec![(3, 0, 2), (5, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn group_shrunk_to_one_renders_standalone() {
+        let all = [row(3, "c", "/x")];
+        assert_eq!(
+            derive(&all, &no_filter(), None, ColumnSort::Default, &[]),
+            vec![(3, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn empty_folder_never_groups() {
+        let all = [row(2, "b", ""), row(1, "a", "")];
+        assert_eq!(
+            derive(&all, &no_filter(), None, ColumnSort::Default, &[]),
+            vec![(1, 0, 1), (2, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn trailing_separator_normalized() {
+        let all = [row(2, "b", "/a/"), row(1, "a", "/a")];
+        assert_eq!(
+            derive(&all, &no_filter(), None, ColumnSort::Default, &[]),
+            vec![(1, 0, 2), (2, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn default_sort_is_id_order_regardless_of_input_order() {
+        let all = [row(3, "c", "/y"), row(1, "a", ""), row(2, "b", "")];
+        assert_eq!(
+            derive(&all, &no_filter(), None, ColumnSort::Default, &[]),
+            vec![(1, 0, 1), (2, 0, 1), (3, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn name_sort_orders_units_by_parent_and_children_by_name() {
+        // Group "/x": parent id 1 "zeta", children id 3 "gamma", id 4
+        // "alpha"; standalone id 2 "mid". Ascending name: units by parent
+        // name ("mid" < "zeta"), children by their names.
+        let all = [
+            row(4, "alpha", "/x"),
+            row(2, "mid", ""),
+            row(3, "gamma", "/x"),
+            row(1, "zeta", "/x"),
+        ];
+        assert_eq!(
+            derive(&all, &no_filter(), Some("name"), ColumnSort::Ascending, &[]),
+            vec![(2, 0, 1), (1, 0, 3), (4, 1, 3), (3, 1, 3)]
+        );
+    }
+
+    #[test]
+    fn descending_reverses_units_and_children() {
+        let all = [
+            row(4, "alpha", "/x"),
+            row(2, "mid", ""),
+            row(3, "gamma", "/x"),
+            row(1, "zeta", "/x"),
+        ];
+        assert_eq!(
+            derive(&all, &no_filter(), Some("name"), ColumnSort::Descending, &[]),
+            vec![(1, 0, 3), (3, 1, 3), (4, 1, 3), (2, 0, 1)]
+        );
+    }
+
+    #[test]
+    fn equal_keys_tiebreak_by_id() {
+        // Identical names: the ascending-id tiebreak keeps a stable order in
+        // BOTH directions (the parent stays first regardless).
+        let all = [row(3, "same", "/x"), row(1, "same", "/x"), row(2, "same", "")];
+        for dir in [ColumnSort::Ascending, ColumnSort::Descending] {
+            assert_eq!(
+                derive(&all, &no_filter(), Some("name"), dir, &[]),
+                vec![(1, 0, 2), (3, 1, 2), (2, 0, 1)]
+            );
+        }
+    }
+
+    #[test]
+    fn normalizes_trailing_separators() {
+        assert_eq!(normalize_folder("/a/"), "/a");
+        assert_eq!(normalize_folder("/a\\"), "/a");
+        assert_eq!(normalize_folder("/a//"), "/a");
+        assert_eq!(normalize_folder(""), "");
+    }
+
+    #[test]
+    fn default_folder_torrents_never_group() {
+        // Every add lands in the session's default download folder unless
+        // pointed elsewhere: those torrents must stay regular rows, while a
+        // genuinely shared non-default folder still groups.
+        let all = [
+            row(1, "a", "/tmp"),
+            row(2, "b", "/tmp"),
+            row(3, "c", "/data"),
+            row(4, "d", "/data"),
+        ];
+        assert_eq!(
+            derive_with_default(
+                &all,
+                &no_filter(),
+                None,
+                ColumnSort::Default,
+                &[],
+                Some("/tmp")
+            ),
+            vec![(1, 0, 1), (2, 0, 1), (3, 0, 2), (4, 1, 2)]
+        );
+    }
+
+    #[test]
+    fn default_folder_is_normalized_before_comparing() {
+        let all = [row(2, "b", "/tmp/"), row(1, "a", "/tmp")];
+        assert_eq!(
+            derive_with_default(
+                &all,
+                &no_filter(),
+                None,
+                ColumnSort::Default,
+                &[],
+                Some("/tmp/")
+            ),
+            vec![(1, 0, 1), (2, 0, 1)]
+        );
     }
 }

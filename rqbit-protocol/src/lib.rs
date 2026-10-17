@@ -38,5 +38,6 @@ pub use messages::{
 };
 pub use types::{
     ApiAddTorrent, ConnKind, DhtStats, LiveStats, PeerEntry, PeerStats, PeerStatsSnapshot,
-    SessionStats, Speed, TorrentDetails, TorrentFile, TorrentList, TorrentState, TorrentStats,
+    SessionInfo, SessionStats, Speed, TorrentDetails, TorrentFile, TorrentList, TorrentState,
+    TorrentStats,
 };

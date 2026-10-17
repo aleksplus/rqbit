@@ -365,8 +365,23 @@ impl MainPanel {
             let rows: Vec<TorrentRow> = response
                 .map(|r| r.torrents.iter().map(TorrentRow::from_details).collect())
                 .unwrap_or_default();
+            // Session default download folder — keeps default-folder torrents
+            // out of destination-folder grouping. Best-effort: on error keep
+            // whatever the delegate already knows.
+            let default_folder = client
+                .session_default_folder()
+                .await
+                .ok()
+                .flatten();
 
-            let _ = this.update(cx, |this, cx| this.install_rows(rows, cx));
+            let _ = this.update(cx, |this, cx| {
+                this.table_state.update(cx, |state, cx| {
+                    state
+                        .delegate_mut()
+                        .set_default_folder(default_folder.as_deref());
+                });
+                this.install_rows(rows, cx);
+            });
         })
         .detach();
     }

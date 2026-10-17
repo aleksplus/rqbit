@@ -124,6 +124,15 @@ impl TorrentClient for LocalClient {
         Ok(proto::SessionStats::from(&api.api_session_stats()))
     }
 
+    async fn session_default_folder(&self) -> ClientResult<Option<String>> {
+        // Read the LIVE session (not the config) so it stays correct when
+        // settings change tears down and recreates the session.
+        let api = self.api();
+        Ok(Some(
+            api.session().default_output_folder().to_string_lossy().into_owned(),
+        ))
+    }
+
     async fn dht_stats(&self) -> ClientResult<DhtStats> {
         let api = self.api();
         api.api_dht_stats()

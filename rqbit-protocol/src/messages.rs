@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::error::ProtoError;
 pub use crate::types::TorrentId;
 use crate::types::{
-    ApiAddTorrent, DhtStats, PeerStatsSnapshot, SessionStats, TorrentDetails, TorrentList,
-    TorrentStats,
+    ApiAddTorrent, DhtStats, PeerStatsSnapshot, SessionInfo, SessionStats, TorrentDetails,
+    TorrentList, TorrentStats,
 };
 
 pub type RequestId = u64;
@@ -51,6 +51,9 @@ pub enum Request {
     PeerStats { torrent: TorrentId },
     /// `Api::api_session_stats`.
     SessionStats,
+    /// Session-level info (e.g. the default download folder) via
+    /// `Session::default_output_folder`.
+    SessionInfo,
     /// `Api::api_dht_stats` — errors with
     /// [`crate::error::ProtoErrorKind::DhtDisabled`] when DHT is off.
     DhtStats,
@@ -125,6 +128,7 @@ pub enum ResponsePayload {
     Stats(Box<TorrentStats>),
     PeerStats(PeerStatsSnapshot),
     SessionStats(Box<SessionStats>),
+    SessionInfo(Box<SessionInfo>),
     DhtStats(DhtStats),
     Added(Box<ApiAddTorrent>),
     /// Action succeeded, nothing to return.

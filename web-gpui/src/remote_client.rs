@@ -34,6 +34,9 @@ const RECONNECT_DELAY_MS: i32 = 2000;
 pub struct RemoteClient {
     url: String,
     next_id: Cell<RequestId>,
+    /// Cached `Request::SessionInfo` answer (the daemon's download folder is
+    /// fixed for its lifetime).
+    default_folder: Cell<Option<String>>,
     state: Rc<RefCell<State>>,
 }
 
@@ -56,6 +59,7 @@ impl RemoteClient {
         Self {
             url,
             next_id: Cell::new(1),
+            default_folder: Cell::new(None),
             state: Rc::new(RefCell::new(State {
                 outgoing: None,
                 pending: HashMap::new(),
@@ -134,6 +138,7 @@ fn unexpected(payload: ResponsePayload, expected: &'static str) -> ProtoError {
         ResponsePayload::Stats(_) => "Stats",
         ResponsePayload::PeerStats(_) => "PeerStats",
         ResponsePayload::SessionStats(_) => "SessionStats",
+        ResponsePayload::SessionInfo(_) => "SessionInfo",
         ResponsePayload::DhtStats(_) => "DhtStats",
         ResponsePayload::Added(_) => "Added",
         ResponsePayload::Empty => "Empty",
@@ -340,6 +345,22 @@ impl TorrentClient for RemoteClient {
         match self.request(Request::SessionStats).await? {
             ResponsePayload::SessionStats(stats) => Ok(*stats),
             other => Err(unexpected(other, "SessionStats")),
+        }
+    }
+
+    async fn session_default_folder(&self) -> ClientResult<Option<String>> {
+        // The daemon's download folder is fixed for its lifetime; cache it so
+        // the per-second table refresh doesn't re-ask.
+        if let Some(cached) = self.default_folder.get() {
+            return Ok(Some(cached));
+        }
+        match self.request(Request::SessionInfo).await? {
+            ResponsePayload::SessionInfo(info) => {
+                let folder = info.default_download_folder;
+                self.default_folder.set(Some(folder.clone()));
+                Ok(Some(folder))
+            }
+            other => Err(unexpected(other, "SessionInfo")),
         }
     }
 

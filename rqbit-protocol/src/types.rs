@@ -218,6 +218,14 @@ pub struct DhtStats {
     pub routing_table_size_v6: u64,
 }
 
+/// Session-level configuration the UI needs. The torrent list uses
+/// `default_download_folder` to keep torrents that merely sit in the
+/// session's default download directory out of destination-folder grouping.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionInfo {
+    pub default_download_folder: String,
+}
+
 /// Response of `Api::api_add_torrent`. `id: None` means list-only
 /// (the add dialog's file-list preview).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
